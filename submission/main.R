@@ -2,10 +2,8 @@
 # 0.99 --> 0.95: Log Likelihood: from -167.4 to -149.6, Max root: from 1.007 to 1.004
 # TODO compare with their forecasts, reconstruction error there
 # TODO review if this model setup is right --> tested with "summary(pca_X)" and "roots(var_model)"
-# TODO fix the missing gap in the data
-install.packages("vars") 
-install.packages("ggplot2")
-install.packages("tidyr")
+# TODO fix the missing gap in the data --> tested with "tail(df_train_clean$date)" "head(future_dates)", "tail(Y_pred_real)" "head(forecast_long_all)"
+
 library(ggplot2)
 library(dplyr)
 library(vars) 
