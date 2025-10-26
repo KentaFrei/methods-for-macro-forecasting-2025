@@ -1,4 +1,5 @@
-# TODO: Is the cutoff at 0.99 correlation common practice? Should it be a different value?
+# TODO: Is the cutoff at 0.99 correlation common practice? --> Now is set to 0.95!!!
+# 0.99 --> 0.95: Log Likelihood: from -167.4 to -149.6, Max root: from 1.007 to 1.004
 # TODO compare with their forecasts, reconstruction error there
 # TODO review if this model setup is right
 # TODO fix the missing gap in the data
@@ -93,7 +94,7 @@ vars_X <- setdiff(names(df_train_std)[-1], vars_Y)
 
 # Remove variables which are highly correlated (nominal gdp and real gdp, for instance) to avoid overfitting
 cor_mat <- cor(df_train_std[, vars_X], use = "pairwise.complete.obs")
-threshold <- 0.99
+threshold <- 0.95
 hi_pairs <- which(abs(cor_mat) > threshold & upper.tri(cor_mat), arr.ind = TRUE)
 redundant <- unique(rownames(cor_mat)[hi_pairs[, 1]])
 vars_X_filtered <- setdiff(vars_X, redundant)
