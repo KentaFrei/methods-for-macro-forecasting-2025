@@ -1,7 +1,7 @@
 # TODO: Is the cutoff at 0.99 correlation common practice? --> Now is set to 0.95!!!
 # 0.99 --> 0.95: Log Likelihood: from -167.4 to -149.6, Max root: from 1.007 to 1.004
 # TODO compare with their forecasts, reconstruction error there
-# TODO review if this model setup is right
+# TODO review if this model setup is right --> tested with "summary(pca_X)" and "roots(var_model)"
 # TODO fix the missing gap in the data
 install.packages("vars") 
 install.packages("ggplot2")
