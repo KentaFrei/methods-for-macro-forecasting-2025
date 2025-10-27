@@ -3,7 +3,7 @@
 # TODO compare with their forecasts, reconstruction error there
 # TODO review if this model setup is right --> tested with "summary(pca_X)" and "roots(var_model)"
 # TODO fix the missing gap in the data --> tested with "tail(df_train_clean$date)" "head(future_dates)", "tail(Y_pred_real)" "head(forecast_long_all)"
-
+# added Bai-Ng criterion
 library(ggplot2)
 library(dplyr)
 library(vars) 
@@ -98,12 +98,72 @@ redundant <- unique(rownames(cor_mat)[hi_pairs[, 1]])
 vars_X_filtered <- setdiff(vars_X, redundant)
 cat("Removed", length(redundant), "variables with |corr| >", threshold, "\n")
 
-# run pca with 5 component vectors
-pca_X <- prcomp(df_train_std[, vars_X_filtered], center = FALSE, scale. = FALSE)
-r <- 5
-F_hat <- pca_X$x[, 1:r]
-Lambda_hat <- pca_X$rotation[, 1:r]
+# NEW: Bai–Ng selectors 
+bn_select_r <- function(X, rmax = NULL, crit = c("ICp3","ICp2","ICp1","PCp1","PCp2","PCp3")){
+  crit <- match.arg(crit)
+  X <- as.matrix(X)
+  Tn <- nrow(X); Nn <- ncol(X)
+  
+  # NEW: prudent upper bound for r
+  if (is.null(rmax)) {
+    rmax <- min(15, Nn - 1, floor(0.2 * min(Nn, Tn)))
+  }
+  
+  # center columns 
+  Xc <- scale(X, center = TRUE, scale = FALSE)
+  
+  # SVD once
+  sv <- svd(Xc)                # Xc = U D V'
+  d2 <- sv$d^2                 # singular values squared
+  
+  # Residual SSR for r = 0,1,... (tail sum of d^2)
+  tail_ss <- rev(cumsum(rev(d2)))         # length = min(N,T)
+  rgrid   <- 0:min(rmax, length(d2) - 1)
+  SSR_vec <- tail_ss[rgrid + 1]
+  V_r     <- SSR_vec / (Nn * Tn)          # average residual variance
+  
+  # Penalties 
+  C_NT  <- (Nn + Tn) / (Nn * Tn)
+  L1    <- log(min(Nn, Tn))
+  L2    <- log(Nn * Tn / (Nn + Tn))
+  L3    <- log(Nn * Tn)
+  
+  # Information criteria (ICp*) and panel criteria (PCp*)
+  ICp1 <- log(V_r) + rgrid * C_NT * L1
+  ICp2 <- log(V_r) + rgrid * C_NT * L2
+  ICp3 <- log(V_r) + rgrid * C_NT * L3
+  
+  PCp1 <- V_r + rgrid * C_NT * L1
+  PCp2 <- V_r + rgrid * C_NT * L2
+  PCp3 <- V_r + rgrid * C_NT * L3
+  
+  all_IC <- switch(crit,
+                   ICp1 = ICp1, ICp2 = ICp2, ICp3 = ICp3,
+                   PCp1 = PCp1, PCp2 = PCp2, PCp3 = PCp3)
+  
+  r_sel <- rgrid[which.min(all_IC)]
+  list(r = r_sel, rgrid = rgrid,
+       IC = data.frame(r = rgrid, ICp1 = ICp1, ICp2 = ICp2, ICp3 = ICp3,
+                       PCp1 = PCp1, PCp2 = PCp2, PCp3 = PCp3))
+}
+
+Xmat <- df_train_std[, vars_X_filtered, drop = FALSE]
+
+# NEW: stronger penalty by default (ICp3). 
+bn   <- bn_select_r(Xmat, crit = "ICp3")   # try "ICp2" / "PCp2" to compare
+r    <- max(1, bn$r)
+message("Bai–Ng (", "ICp3", ") selected r = ", r)
+
+# run PCA once, keep first r
+pca_X <- prcomp(Xmat, center = FALSE, scale. = FALSE)
+F_hat <- pca_X$x[, 1:r, drop = FALSE]
+Lambda_hat <- pca_X$rotation[, 1:r, drop = FALSE]
 F_df <- as.data.frame(F_hat)
+
+# NEW: quick diagnostics 
+print(head(bn$IC, 12))
+# plot(bn$IC$r, bn$IC$ICp3, type="b", main="ICp3 vs r")
+
 
 # fit a simple var model with 4 quarter (1yr lag)
 var_model <- VAR(F_df, ic = "AIC", lag.max = 4)
@@ -253,6 +313,7 @@ ggplot() +
     strip.text = element_text(face = "bold"),
     plot.title = element_text(face = "bold", size = 14)
   )
+
 
 ## Below is just demo code
 # Create sample data
