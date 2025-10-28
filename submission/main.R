@@ -160,9 +160,9 @@ F_hat <- pca_X$x[, 1:r, drop = FALSE]
 Lambda_hat <- pca_X$rotation[, 1:r, drop = FALSE]
 F_df <- as.data.frame(F_hat)
 
-# NEW: quick diagnostics 
+# Diagnostics 
 print(head(bn$IC, 12))
-# plot(bn$IC$r, bn$IC$ICp3, type="b", main="ICp3 vs r")
+plot(bn$IC$r, bn$IC$ICp3, type="b", main="ICp3 vs r")
 
 
 # fit a simple var model with 4 quarter (1yr lag)
