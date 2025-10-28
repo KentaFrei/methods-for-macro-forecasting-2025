@@ -347,12 +347,3 @@ ggplot() +
     plot.title = element_text(face = "bold", size = 14)
   )
 
-
-## Below is just demo code
-# Create sample data
-data <- data.frame(
-  x = rnorm(100),
-  y = rnorm(100),
-  group = sample(c("A", "B", "C"), 100, replace = TRUE)
-)
-
