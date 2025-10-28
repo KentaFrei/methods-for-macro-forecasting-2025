@@ -8,8 +8,9 @@ library(ggplot2)
 library(dplyr)
 library(vars) 
 library(tidyr)   
+library(urca)
 
-df <- utils::read.csv("data/data_quarterly.csv")
+df <- utils::read.csv("C:/Users/kfree/OneDrive/Desktop/MASTER 3/MACRO FORECAST/DATASET/data_quarterly.csv")
 head(df)
 # To build our model, we focus on data in the past 
 df_train <- df %>%
@@ -23,7 +24,7 @@ df_train <- df_train %>%
 # Check to confirm no missing values
 sapply(df_train, function(x) sum(is.na(x))) %>% sort(decreasing = TRUE)
 
-metadata <- utils::read.csv(“data/metadata_quarterly_en.csv”)
+metadata <- utils::read.csv("C:/Users/kfree/OneDrive/Desktop/MASTER 3/MACRO FORECAST/DATASET/metadata_quarterly_en.csv")
 
 # We need to transform the raw values to make the series stationary
 unit_to_transform <- c(
@@ -43,6 +44,7 @@ unit_to_transform <- c(
   "rate" = "diff"
 )
 metadata$transform <- unit_to_transform[metadata$unit]
+metadata <- metadata[!is.na(metadata$transform), ]
 # Now each column has its transformation stored with it in metadata
 
 #Helper function
@@ -72,9 +74,28 @@ for (i in seq_len(nrow(metadata))) {
 df_train_clean <- df_train_clean[-1, ]
 head(df_train_clean)
 
+# Test Stationarity after transformation
+adf_results <- sapply(df_train_clean[-1], function(x) {
+  test <- tryCatch(ur.df(na.omit(x), type = "drift", selectlags = "AIC"), error = function(e) NULL)
+  if (is.null(test)) return(NA)
+  pval <- test@testreg$coefficients[2,4]
+  return(pval)
+})
+
+adf_results <- sort(adf_results)
+cat("P-value ADF test (first 10 variables less stationary):\n")
+print(head(adf_results, 10))
+
+# Delete Varibales with Variance 0
+var_zero <- sapply(df_train_clean[-1], function(x) var(x, na.rm = TRUE) == 0)
+if (any(var_zero)) {
+  cat("Deleted", sum(var_zero), "variabiles with 0 variance:\n")
+  print(names(var_zero[var_zero]))
+  df_train_clean <- df_train_clean[, c(TRUE, !var_zero)]  # keep column "Date"
+}
+
 # Now we need to standardize everything
 df_train_std <- df_train_clean
-
 df_train_std[-1] <- scale(df_train_clean[-1]) # scale subtracts col mean and divides by SD
 head(df_train_std)
 
@@ -160,9 +181,21 @@ F_hat <- pca_X$x[, 1:r, drop = FALSE]
 Lambda_hat <- pca_X$rotation[, 1:r, drop = FALSE]
 F_df <- as.data.frame(F_hat)
 
-# Diagnostics 
+# NEW: quick diagnostics 
 print(head(bn$IC, 12))
-plot(bn$IC$r, bn$IC$ICp3, type="b", main="ICp3 vs r")
+# plot(bn$IC$r, bn$IC$ICp3, type="b", main="ICp3 vs r")
+
+# Test Stationarity for each factor
+adf_factors <- sapply(F_df, function(x) {
+  test <- tryCatch(ur.df(na.omit(x), type = "drift", selectlags = "AIC"), error = function(e) NULL)
+  if (is.null(test)) return(NA)
+  pval <- test@testreg$coefficients[2,4]
+  return(pval)
+})
+
+adf_factors <- sort(adf_factors)
+cat("P-value ADF test for PCA factors:\n")
+print(adf_factors)
 
 
 # fit a simple var model with 4 quarter (1yr lag)
