@@ -108,16 +108,22 @@ scaler_params <- data.frame(
 
 
 # Remove the variables we are trying to predice
-vars_Y <- c("gdp", "cpi", "unempoff")
+  vars_Y <- c("gdp", "cpi", "unempoff")
 vars_X <- setdiff(names(df_train_std)[-1], vars_Y)
 
 # Remove variables which are highly correlated (nominal gdp and real gdp, for instance) to avoid overfitting
 cor_mat <- cor(df_train_std[, vars_X], use = "pairwise.complete.obs")
 threshold <- 0.95
 hi_pairs <- which(abs(cor_mat) > threshold & upper.tri(cor_mat), arr.ind = TRUE)
-redundant <- unique(rownames(cor_mat)[hi_pairs[, 1]])
+
+if (NROW(hi_pairs) > 0) {
+  redundant <- unique(rownames(cor_mat)[hi_pairs[, 1]])
+  cat("Removed", length(redundant), "variables with |corr| >", threshold, "\n")
+} else {
+  redundant <- character(0)
+  cat("No variables removed (no pair above |corr| >", threshold, ")\n")
+}
 vars_X_filtered <- setdiff(vars_X, redundant)
-cat("Removed", length(redundant), "variables with |corr| >", threshold, "\n")
 
 # NEW: Bai–Ng selectors 
 bn_select_r <- function(X, rmax = NULL, crit = c("ICp3","ICp2","ICp1","PCp1","PCp2","PCp3")){
@@ -181,6 +187,13 @@ F_hat <- pca_X$x[, 1:r, drop = FALSE]
 Lambda_hat <- pca_X$rotation[, 1:r, drop = FALSE]
 F_df <- as.data.frame(F_hat)
 
+# Align F_df and Y_df over complete rows 
+merge_df <- cbind(F_df, df_train_std[, vars_Y, drop = FALSE])
+merge_df <- merge_df[complete.cases(merge_df), ]
+
+F_df <- merge_df[, colnames(F_df), drop = FALSE]
+Y_df <- merge_df[, vars_Y, drop = FALSE]
+
 # NEW: quick diagnostics 
 print(head(bn$IC, 12))
 # plot(bn$IC$r, bn$IC$ICp3, type="b", main="ICp3 vs r")
@@ -204,8 +217,6 @@ summary(var_model)
 
 
 # Regressions on factors (IN-SAMPLE)
-Y_df <- df_train_std[, vars_Y]
-
 beta_hat <- matrix(NA, nrow = ncol(F_df), ncol = ncol(Y_df))
 colnames(beta_hat) <- vars_Y
 for (j in seq_along(vars_Y)) {
@@ -346,7 +357,7 @@ ggplot() +
     strip.text = element_text(face = "bold"),
     plot.title = element_text(face = "bold", size = 14)
   )
-                   
+
 # =========================
 # OOS setup (80/20)
 # =========================
@@ -509,6 +520,7 @@ for (tcut in oos_origin_idx) {
   L_ols <- 1
   Tn <- nrow(F_train); r <- ncol(F_train)
   stopifnot(Tn > L_ols)
+  stopifnot(Tn > p_fix)  
   
   # Build regressor matrix aligned with Y
   F_curr  <- F_train[(1+L_ols):Tn, , drop = FALSE]     # F_t
@@ -624,17 +636,20 @@ library(tidyr)
 # --- Prepare long-format data for ggplot ---
 
 # Select only relevant columns (real + pred for both horizons)
-plot_df <- oos_results %>%
-  dplyr::select(origin_date,
+plot_df_h1 <- oos_results %>%
+  dplyr::select(h1_date,
                 dplyr::ends_with("_pred_h1"),
-                dplyr::ends_with("_real_h1"),
+                dplyr::ends_with("_real_h1")) %>%
+  dplyr::rename(date = h1_date)
+
+plot_df_h4 <- oos_results %>%
+  dplyr::select(h4_date,
                 dplyr::ends_with("_pred_h4"),
                 dplyr::ends_with("_real_h4")) %>%
-  dplyr::rename(date = origin_date)
+  dplyr::rename(date = h4_date)
 
-# Reshape to long format for each horizon
-long_h1 <- plot_df %>%
-  dplyr::select(date, dplyr::ends_with("_pred_h1"), dplyr::ends_with("_real_h1")) %>%
+# Long per ciascun orizzonte
+long_h1 <- plot_df_h1 %>%
   tidyr::pivot_longer(
     cols = -date,
     names_to = c("variable", "type"),
@@ -643,8 +658,7 @@ long_h1 <- plot_df %>%
   ) %>%
   dplyr::mutate(horizon = "h=1 (1Q ahead)")
 
-long_h4 <- plot_df %>%
-  dplyr::select(date, dplyr::ends_with("_pred_h4"), dplyr::ends_with("_real_h4")) %>%
+long_h4 <- plot_df_h4 %>%
   tidyr::pivot_longer(
     cols = -date,
     names_to = c("variable", "type"),
@@ -652,7 +666,6 @@ long_h4 <- plot_df %>%
     values_to = "value"
   ) %>%
   dplyr::mutate(horizon = "h=4 (1Y ahead)")
-
 
 long_all <- bind_rows(long_h1, long_h4)
 
@@ -795,4 +808,5 @@ now_table <- data.frame(
   forecast_h4    = as.numeric(Y_h4_real)
 )
 print(now_table)
+
 
