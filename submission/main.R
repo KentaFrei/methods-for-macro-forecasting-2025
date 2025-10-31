@@ -332,6 +332,183 @@ oos_results <- cbind(
 # Quick preview
 head(oos_results, 5)
 
+# =========================
+# 6. Charts
+# =========================
+plot_df_h1 <- oos_results %>%
+  dplyr::select(h1_date,
+                dplyr::ends_with("_pred_h1"),
+                dplyr::ends_with("_real_h1")) %>%
+  dplyr::rename(date = h1_date)
+
+plot_df_h4 <- oos_results %>%
+  dplyr::select(h4_date,
+                dplyr::ends_with("_pred_h4"),
+                dplyr::ends_with("_real_h4")) %>%
+  dplyr::rename(date = h4_date)
+
+# Long per ciascun orizzonte
+long_h1 <- plot_df_h1 %>%
+  tidyr::pivot_longer(
+    cols = -date,
+    names_to = c("variable", "type"),
+    names_pattern = "(.*)_(pred|real)_h1",
+    values_to = "value"
+  ) %>%
+  dplyr::mutate(horizon = "h=1 (1Q ahead)")
+
+long_h4 <- plot_df_h4 %>%
+  tidyr::pivot_longer(
+    cols = -date,
+    names_to = c("variable", "type"),
+    names_pattern = "(.*)_(pred|real)_h4",
+    values_to = "value"
+  ) %>%
+  dplyr::mutate(horizon = "h=4 (1Y ahead)")
+
+long_all <- bind_rows(long_h1, long_h4)
+
+# Clean variable names for facets
+long_all$variable <- recode(long_all$variable,
+                            gdp = "GDP",
+                            cpi = "CPI",
+                            unempoff = "Unemployment"
+)
+
+# --- Plot OOS forecasts vs actuals ---
+ggplot(long_all, aes(x = date, y = value, color = type, linetype = type)) +
+  geom_line(linewidth = 0.7) +
+  facet_grid(variable ~ horizon, scales = "free_y") +
+  scale_color_manual(values = c("real" = "black", "pred" = "steelblue")) +
+  scale_linetype_manual(values = c("real" = "solid", "pred" = "dashed")) +
+  labs(
+    title = "Out-of-Sample Forecasts (Expanding Window)",
+    subtitle = "Dynamic Factor Model (PCA + VAR)",
+    x = "Date", y = "Value",
+    color = "", linetype = ""
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "top",
+    strip.text = element_text(face = "bold"),
+    plot.title = element_text(face = "bold", size = 14)
+  )
+
+
+# =========================
+# "NOW" FORECASTS from latest data (h=1 and h=4)
+# =========================
+
+# Keep only observed data up to today (adjust the date if needed)
+df_train_clean <- df_train_clean %>%
+  dplyr::filter(date <= as.Date("2025-07-01"))  # last observed quarter
+
+# Decide predictor set for NOW: prefer vars_X_oos if available (frozen on initial 80%)
+if (exists("vars_X_oos")) {
+  X_now_names <- vars_X_oos
+  message("NOW: using frozen predictor set vars_X_oos (from initial 80%).")
+} else {
+  X_now_names <- vars_X_filtered
+  message("NOW: vars_X_oos not found, falling back to vars_X_filtered.")
+}
+
+# Build working frame
+needed_cols <- c("date", vars_Y, X_now_names)
+needed_cols <- intersect(needed_cols, names(df_train_clean))
+df_now <- df_train_clean[, needed_cols, drop = FALSE]
+df_now <- df_now[stats::complete.cases(df_now), , drop = FALSE]
+df_now <- df_now[order(df_now$date), , drop = FALSE]
+row.names(df_now) <- NULL
+
+# Split into X and Y (full history up to last observed quarter)
+X_all <- as.matrix(df_now[, X_now_names, drop = FALSE])
+Y_all <- as.matrix(df_now[, vars_Y,      drop = FALSE])
+
+# Standardize using full-history moments (we are producing NOW forecasts)
+X_mean <- apply(X_all, 2, mean, na.rm = TRUE)
+X_sd   <- apply(X_all, 2, sd,   na.rm = TRUE); X_sd[X_sd == 0] <- 1
+X_std  <- scale(X_all, center = X_mean, scale = X_sd)
+
+Y_mean <- apply(Y_all, 2, mean, na.rm = TRUE)
+Y_sd   <- apply(Y_all, 2, sd,   na.rm = TRUE); Y_sd[Y_sd == 0] <- 1
+Y_std  <- scale(Y_all, center = Y_mean, scale = Y_sd)
+
+# Select number of factors r (reuse r_fixed if available; else choose on initial 80%)
+if (exists("r_fixed")) {
+  r_now <- r_fixed
+  message("NOW: using r_fixed = ", r_now)
+} else {
+  t0_now <- max(1L, floor(0.8 * nrow(X_std)))
+  X0_now <- X_std[1:t0_now, , drop = FALSE]
+  bn_now <- bn_select_r(X0_now, crit = "ICp3")
+  r_now  <- max(1, bn_now$r)
+  message("NOW: r selected by ICp3 on initial 80% = ", r_now)
+}
+
+# PCA on standardized X (full history)
+pca_now <- prcomp(X_std, center = FALSE, scale. = FALSE)
+F_all   <- pca_now$x[, 1:r_now, drop = FALSE]
+colnames(F_all) <- paste0("F", seq_len(r_now))
+
+# OLS with factor lags (L=1): Y_std ~ [1, F_t, F_{t-1}]
+L_ols <- 1
+Tn <- nrow(F_all); r <- ncol(F_all)
+stopifnot(Tn > L_ols)
+
+F_curr <- F_all[(1+L_ols):Tn, , drop = FALSE]        # F_t
+F_lag1 <- F_all[(1):(Tn-L_ols), , drop = FALSE]      # F_{t-1}
+X_ols  <- cbind(F_curr, F_lag1)                      # [F_t | F_{t-1}]
+colnames(X_ols) <- c(paste0("F",1:r), paste0("L1_F",1:r))
+Y_ols  <- Y_std[(1+L_ols):Tn, , drop = FALSE]        # align Y
+
+X_ols_const <- cbind(const = 1, X_ols)
+beta_hat_now <- array(NA, dim = c(ncol(X_ols_const), ncol(Y_ols)),
+                      dimnames = list(colnames(X_ols_const), colnames(Y_ols)))
+for (j in seq_len(ncol(Y_ols))) {
+  fit_j <- lm(Y_ols[, j] ~ X_ols)  # includes intercept
+  beta_hat_now[, j] <- coef(fit_j)
+}
+
+# VAR on factors (levels) with fixed lag p=2 (more stable)
+p_fix <- 2
+var_now <- VAR(as.data.frame(F_all), p = p_fix, type = "const")
+
+# Forecast factors to h=1 and h=4
+h_long <- 4
+fc_now <- predict(var_now, n.ahead = h_long)
+fac_names <- colnames(F_all)
+
+F_h1 <- sapply(fac_names, function(nm) fc_now$fcst[[nm]][1, "fcst"])  # F_{t+1}
+F_h3 <- sapply(fac_names, function(nm) fc_now$fcst[[nm]][3, "fcst"])  # F_{t+3}
+F_h4 <- sapply(fac_names, function(nm) fc_now$fcst[[nm]][4, "fcst"])  # F_{t+4}
+F_t  <- as.numeric(F_all[nrow(F_all), , drop = FALSE])                # F_t
+
+# Map factor forecasts to Y (std) using same lag structure
+# h=1: regressors = [1, F_{t+1}, F_t]
+Y_h1_std <- as.numeric(c(1, c(F_h1, F_t)) %*% beta_hat_now)
+# h=4: regressors = [1, F_{t+4}, F_{t+3}]
+Y_h4_std <- as.numeric(c(1, c(F_h4, F_h3)) %*% beta_hat_now)
+
+# De-standardize back to transformed units
+Y_h1_real <- Y_h1_std * Y_sd + Y_mean
+Y_h4_real <- Y_h4_std * Y_sd + Y_mean
+names(Y_h1_real) <- vars_Y
+names(Y_h4_real) <- vars_Y
+
+# Target dates (next quarter and +4 quarters)
+last_date  <- max(df_now$date)
+h1_date    <- seq(last_date, by = "quarter", length.out = 2)[2]
+h4_date    <- seq(last_date, by = "quarter", length.out = 5)[5]
+
+now_table <- data.frame(
+  variable = vars_Y,
+  target_h1_date = h1_date,
+  forecast_h1    = as.numeric(Y_h1_real),
+  target_h4_date = h4_date,
+  forecast_h4    = as.numeric(Y_h4_real)
+)
+print(now_table)
+
 
 # # NEW: Bai–Ng selectors 
 # bn_select_r <- function(X, rmax = NULL, crit = c("ICp3","ICp2","ICp1","PCp1","PCp2","PCp3")){
