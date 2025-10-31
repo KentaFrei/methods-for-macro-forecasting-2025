@@ -332,9 +332,186 @@ oos_results <- cbind(
 # Quick preview
 head(oos_results, 5)
 
+F_hat <- pca_X$x[, 1:r, drop = FALSE]
+Lambda_hat <- pca_X$rotation[, 1:r, drop = FALSE]
+F_df <- as.data.frame(F_hat)
+
+# Align F_df and Y_df over complete rows 
+merge_df <- cbind(F_df, df_train_std[, vars_Y, drop = FALSE])
+merge_df <- merge_df[complete.cases(merge_df), ]
+
+F_df <- merge_df[, colnames(F_df), drop = FALSE]
+Y_df <- merge_df[, vars_Y, drop = FALSE]
+
+# NEW: quick diagnostics 
+print(head(bn$IC, 12))
+# plot(bn$IC$r, bn$IC$ICp3, type="b", main="ICp3 vs r")
+
+# Test Stationarity for each factor
+adf_factors <- sapply(F_df, function(x) {
+  test <- tryCatch(ur.df(na.omit(x), type = "drift", selectlags = "AIC"), error = function(e) NULL)
+  if (is.null(test)) return(NA)
+  pval <- test@testreg$coefficients[2,4]
+  return(pval)
+})
+
+adf_factors <- sort(adf_factors)
+cat("P-value ADF test for PCA factors:\n")
+print(adf_factors)
+
+
+# fit a simple var model with 4 quarter (1yr lag)
+var_model <- VAR(F_df, ic = "AIC", lag.max = 4)
+summary(var_model)
+
+
+# Regressions on factors (IN-SAMPLE)
+beta_hat <- matrix(NA, nrow = ncol(F_df), ncol = ncol(Y_df))
+colnames(beta_hat) <- vars_Y
+for (j in seq_along(vars_Y)) {
+  fit <- lm(Y_df[[j]] ~ as.matrix(F_df))
+  beta_hat[, j] <- coef(fit)[-1]
+}
+
+# In-sample predictions (standardised scale)
+Y_pred_std <- as.matrix(F_df) %*% beta_hat
+colnames(Y_pred_std) <- vars_Y
+
+# -----R^2 in-sample -------
+r2_values <- sapply(seq_len(ncol(Y_df)), function(i) {
+  1 - mean((Y_df[, i] - Y_pred_std[, i])^2, na.rm = TRUE) /
+    mean((Y_df[, i] - mean(Y_df[, i], na.rm = TRUE))^2, na.rm = TRUE)
+})
+r2_table <- data.frame(variable = vars_Y, R2 = round(r2_values, 3))
+print(r2_table)
+
+# # Destandardise in-sample predictions
+scaler_subset <- scaler_params[match(vars_Y, scaler_params$variable), ]
+Y_pred_real <- sweep(Y_pred_std, 2, scaler_subset$sd, "*")
+Y_pred_real <- sweep(Y_pred_real, 2, scaler_subset$mean, "+")
+
+
+
+# Forecast multi-CI (50%, 80%, 95%) and chart
+# Future outlook and dates
+h <- 8
+last_date <- max(df_train_clean$date)
+future_dates <- seq(last_date, by = "quarter", length.out = h + 1)[-1]
+
+# Compute forecast bands
+forecast_bands <- function(var_model, beta_hat, scaler_params, vars_Y, h, ci, future_dates) {
+  F_fc <- predict(var_model, n.ahead = h, ci = ci)
+  
+  # h x r matrices of predicted factors (fcst/low/up)
+  F_forecast_mat <- as.matrix(sapply(F_fc$fcst, function(x) x[, "fcst"]))
+  F_lower_mat    <- as.matrix(sapply(F_fc$fcst, function(x) x[, "lower"]))
+  F_upper_mat    <- as.matrix(sapply(F_fc$fcst, function(x) x[, "upper"]))
+  
+  # Projection on targets (standardised scale)
+  Y_forecast_std <- F_forecast_mat %*% beta_hat
+  Y_lower_std    <- F_lower_mat    %*% beta_hat
+  Y_upper_std    <- F_upper_mat    %*% beta_hat
+  
+  colnames(Y_forecast_std) <- vars_Y
+  colnames(Y_lower_std)    <- vars_Y
+  colnames(Y_upper_std)    <- vars_Y
+  
+  # Destandardize
+  scaler_subset <- scaler_params[match(vars_Y, scaler_params$variable), ]
+  Y_forecast_real <- sweep(Y_forecast_std, 2, scaler_subset$sd, "*")
+  Y_forecast_real <- sweep(Y_forecast_real, 2, scaler_subset$mean, "+")
+  Y_lower_real    <- sweep(Y_lower_std,    2, scaler_subset$sd, "*")
+  Y_lower_real    <- sweep(Y_lower_real,   2, scaler_subset$mean, "+")
+  Y_upper_real    <- sweep(Y_upper_std,    2, scaler_subset$sd, "*")
+  Y_upper_real    <- sweep(Y_upper_real,   2, scaler_subset$mean, "+")
+  
+  # Data frame "long" for ggplot
+  df_mid <- data.frame(date = future_dates, Y_forecast_real)
+  df_low <- data.frame(date = future_dates, Y_lower_real)
+  df_up  <- data.frame(date = future_dates, Y_upper_real)
+  
+  long_mid <- tidyr::pivot_longer(df_mid, cols = dplyr::all_of(vars_Y),
+                                  names_to = "variable", values_to = "value")
+  long_low <- tidyr::pivot_longer(df_low, cols = dplyr::all_of(vars_Y),
+                                  names_to = "variable", values_to = "lower")
+  long_up  <- tidyr::pivot_longer(df_up,  cols = dplyr::all_of(vars_Y),
+                                  names_to = "variable", values_to = "upper")
+  
+  bands <- long_mid %>%
+    dplyr::left_join(long_low, by = c("date", "variable")) %>%
+    dplyr::left_join(long_up,  by = c("date", "variable")) %>%
+    dplyr::mutate(ci = paste0(round(ci * 100), "%"))
+  
+  list(
+    mid   = long_mid %>% dplyr::mutate(ci = paste0(round(ci * 100), "%")),
+    bands = bands
+  )
+}
+
+# Calculate bands for multiple levels
+cis <- c(0.50, 0.80, 0.95)
+res_list <- lapply(cis, function(x) forecast_bands(var_model, beta_hat, scaler_params, vars_Y, h, x, future_dates))
+
+# Central forecast (mid) and bands in ‘long’ format
+forecast_long_all <- dplyr::bind_rows(lapply(res_list, `[[`, "mid"))
+bands_long_all    <- dplyr::bind_rows(lapply(res_list, `[[`, "bands"))
+
+# Observed/predicted/forecast data for lines 
+actual_df <- df_train_clean[, c("date", vars_Y)]
+pred_df   <- data.frame(date = df_train_std$date, Y_pred_real)
+
+long_actual <- tidyr::pivot_longer(actual_df, cols = vars_Y,
+                                   names_to = "variable", values_to = "value") %>%
+  dplyr::mutate(type = "Observed")
+
+long_pred <- tidyr::pivot_longer(pred_df, cols = vars_Y,
+                                 names_to = "variable", values_to = "value") %>%
+  dplyr::mutate(type = "Predicted")
+
+long_fore <- forecast_long_all %>%
+  dplyr::mutate(type = "Forecast")
+
+combined_long <- dplyr::bind_rows(long_actual, long_pred, long_fore)
+
+# Single plot with multi-CI bands + lines 
+bands_long_all$ci <- factor(bands_long_all$ci, levels = c("95%", "80%", "50%"))
+
+
 # =========================
 # 6. Charts
 # =========================
+ggplot() +
+  # Bands (first, so they remain below the lines)
+  geom_ribbon(data = bands_long_all,
+              aes(x = date, ymin = lower, ymax = upper, fill = ci),
+              alpha = 0.2) +
+  # Original lines
+  geom_line(data = combined_long,
+            aes(x = date, y = value, color = type, linetype = type),
+            linewidth = 0.5) +
+  facet_wrap(~ variable, scales = "free_y", ncol = 1) +
+  scale_color_manual(values = c("Observed" = "black",
+                                "Predicted" = "darkgreen",
+                                "Forecast"  = "steelblue")) +
+  scale_linetype_manual(values = c("Observed" = "solid",
+                                   "Predicted" = "solid",
+                                   "Forecast"  = "solid")) +
+  # Legend for CI
+  scale_fill_manual(name = "Conf. Interval",
+                    values = c("95%" = "grey60", "80%" = "grey50", "50%" = "grey40")) +
+  labs(
+    title = "GDP, CPI, and Unemployment",
+    subtitle = paste0("(R²: ",
+                      paste(r2_table$variable, r2_table$R2, collapse = ", "), ")"),
+    x = "Date", y = "Value", color = "", linetype = ""
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "top",
+    strip.text = element_text(face = "bold"),
+    plot.title = element_text(face = "bold", size = 14)
+  )
+                   
 plot_df_h1 <- oos_results %>%
   dplyr::select(h1_date,
                 dplyr::ends_with("_pred_h1"),
