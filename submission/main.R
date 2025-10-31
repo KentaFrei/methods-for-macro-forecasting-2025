@@ -4,15 +4,26 @@
 # TODO review if this model setup is right --> tested with "summary(pca_X)" and "roots(var_model)"
 # TODO fix the missing gap in the data --> tested with "tail(df_train_clean$date)" "head(future_dates)", "tail(Y_pred_real)" "head(forecast_long_all)"
 # added Bai-Ng criterion
+# 1. Setup, Load Packages and Data
 library(ggplot2)
 library(dplyr)
-library(vars) 
-library(tidyr)   
+library(vars)
+library(tidyr)
 library(urca)
 
-df <- utils::read.csv("C:/Users/kfree/OneDrive/Desktop/MASTER 3/MACRO FORECAST/DATASET/data_quarterly.csv")
-head(df)
-# To build our model, we focus on data in the past 
+kfilepath <- "C:/Users/kfree/OneDrive/Desktop/MASTER 3/MACRO FORECAST/DATASET/data_quarterly.csv"
+kfilepath_metadata <- "C:/Users/kfree/OneDrive/Desktop/MASTER 3/MACRO FORECAST/DATASET/metadata_quarterly_en.csv"
+nfilepath_data <- "~/Documents/school/methods-for-macro-forecasting-2025/submission/data/data_quarterly.csv"
+nfilepath_metadata <- "~/Documents/school/methods-for-macro-forecasting-2025/submission/data/metadata_quarterly_en.csv"
+# Adjust depending on environment
+df <- utils::read.csv(nfilepath_data)
+metadata <- utils::read.csv(nfilepath_metadata)
+
+
+# 2. Data Preparation
+vars_Y <- c("gdp", "cpi", "wkfreuro")
+vars_X <- setdiff(names(df_train_std)[-1], vars_Y)
+
 df_train <- df %>%
   mutate(
     date = as.Date(paste0(date, "-01"))
@@ -24,23 +35,30 @@ df_train <- df_train %>%
 # Check to confirm no missing values
 sapply(df_train, function(x) sum(is.na(x))) %>% sort(decreasing = TRUE)
 
-metadata <- utils::read.csv("C:/Users/kfree/OneDrive/Desktop/MASTER 3/MACRO FORECAST/DATASET/metadata_quarterly_en.csv")
-
 # We need to transform the raw values to make the series stationary
 unit_to_transform <- c(
+  # Real and nominal quantities (logs capture proportional growth)
   "real in millions of francs" = "logdiff",
-  "Index" = "logdiff",
   "in millions of francs at current prices" = "logdiff",
+  "real in millions of US dollars" = "logdiff",
+  "in US dollars" = "logdiff",
+  "real in thousands of Swiss francs" = "logdiff",
+  "in thousands of Swiss francs at current prices" = "logdiff",
+  
+  # Indexes and deflators (inflation-type measures)
+  "Index" = "logdiff",
+  "Price deflator" = "logdiff",
+  
+  # Productivity measures (real per-hour or per-FTE)
   "Gross domestic product (adjusted for sporting events) per hour worked" = "logdiff",
   "Gross domestic product (adjusted for sporting events) per full-time equivalent" = "logdiff",
-  "in thousands of persons" = "diff",
-  "Price deflator" = "logdiff",
-  "in US dollars" = "logdiff",
   "Real value of gross domestic product per full-time equivalent" = "logdiff",
+  
+  # Labor quantities (use diff if absolute, logdiff if proportional)
+  "in thousands of persons" = "diff",
+  
+  # Rates and percentages (stationary in differences or demeaned)
   "in percent" = "diff",
-  "real in millions of US dollars" = "logdiff",
-  "in thousands of Swiss francs at current prices" = "logdiff",
-  "real in thousands of Swiss francs" = "logdiff",
   "rate" = "diff"
 )
 metadata$transform <- unit_to_transform[metadata$unit]
@@ -50,6 +68,8 @@ metadata <- metadata[!is.na(metadata$transform), ]
 #Helper function
 transform_variable <- function(x, transform_type) {
   if (transform_type == "logdiff") {
+    # handle zeros or negatives safely
+    if (any(x <= 0, na.rm = TRUE)) return(rep(NA, length(x)))
     return(c(NA, diff(log(x)) * 100))
   } else if (transform_type == "diff") {
     return(c(NA, diff(x)))
@@ -57,6 +77,7 @@ transform_variable <- function(x, transform_type) {
     return(x)
   }
 }
+
 
 # Apply transformations to the df_clean dataset
 df_train_clean <- df_train
@@ -86,14 +107,6 @@ adf_results <- sort(adf_results)
 cat("P-value ADF test (first 10 variables less stationary):\n")
 print(head(adf_results, 10))
 
-# Delete Varibales with Variance 0
-var_zero <- sapply(df_train_clean[-1], function(x) var(x, na.rm = TRUE) == 0)
-if (any(var_zero)) {
-  cat("Deleted", sum(var_zero), "variabiles with 0 variance:\n")
-  print(names(var_zero[var_zero]))
-  df_train_clean <- df_train_clean[, c(TRUE, !var_zero)]  # keep column "Date"
-}
-
 # Now we need to standardize everything
 df_train_std <- df_train_clean
 df_train_std[-1] <- scale(df_train_clean[-1]) # scale subtracts col mean and divides by SD
@@ -106,25 +119,7 @@ scaler_params <- data.frame(
   sd = apply(df_train_clean[-1], 2, sd, na.rm = TRUE)
 )
 
-
-# Remove the variables we are trying to predice
-  vars_Y <- c("gdp", "cpi", "unempoff")
-vars_X <- setdiff(names(df_train_std)[-1], vars_Y)
-
-# Remove variables which are highly correlated (nominal gdp and real gdp, for instance) to avoid overfitting
-cor_mat <- cor(df_train_std[, vars_X], use = "pairwise.complete.obs")
-threshold <- 0.95
-hi_pairs <- which(abs(cor_mat) > threshold & upper.tri(cor_mat), arr.ind = TRUE)
-
-if (NROW(hi_pairs) > 0) {
-  redundant <- unique(rownames(cor_mat)[hi_pairs[, 1]])
-  cat("Removed", length(redundant), "variables with |corr| >", threshold, "\n")
-} else {
-  redundant <- character(0)
-  cat("No variables removed (no pair above |corr| >", threshold, ")\n")
-}
-vars_X_filtered <- setdiff(vars_X, redundant)
-
+# 3. Bai Ng and PCA
 # NEW: Bai–Ng selectors 
 bn_select_r <- function(X, rmax = NULL, crit = c("ICp3","ICp2","ICp1","PCp1","PCp2","PCp3")){
   crit <- match.arg(crit)
