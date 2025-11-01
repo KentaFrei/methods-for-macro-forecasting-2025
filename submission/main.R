@@ -892,3 +892,251 @@ p <- ggplot() +
   )
 
 print(p)
+
+
+# ============================================
+# STATE SPACE: Dynamic Factor Model Initialization (PCA/SVD → F0, Lambda0, R0, A0, Q0)
+# Compatible with KFAS: x_t = Λ f_t + e_t ; f_t = A f_{t-1} + u_t
+# ============================================
+#In your workflow, you currently have roughly these main parts:
+  
+# Data loading + cleaning
+
+# Transformations (logdiff, diff, etc.)
+
+# Standardization (df_train_std, vars_X, vars_Y)
+
+# Number of factors selection (Bai–Ng, ICp3) → gives r_fixed
+
+# now we switch to STATE SPACE MODEL
+
+library(KFAS)
+
+dfm_init <- function(df_train_std, vars_X, r_fixed, ar_cap = 0.98) {
+  stopifnot("date" %in% names(df_train_std))
+  X_std <- as.matrix(df_train_std[, vars_X, drop = FALSE])
+  Tn <- nrow(X_std); Nn <- ncol(X_std)
+  if (Tn < 5 || Nn < 1) stop("X_std has insufficient dimensions.")
+  
+  # --- 1) Prepare matrix for SVD: replace NA with 0 (mean=0 after standardization) ---
+  X_svd <- X_std
+  X_svd[!is.finite(X_svd)] <- 0
+  
+  # --- 2) SVD on standardized X (already zero mean) ---
+  #     Decomposition: X ≈ U D V'
+  #     Factors and loadings (Stock–Watson convention):
+  #     F0 = sqrt(T) * U_r         ;  Lambda0 = V_r * (D_r / sqrt(T))
+  sv <- svd(X_svd)  # X_svd = U D V'
+  r <- max(1, min(r_fixed, length(sv$d), Nn, floor(0.5 * min(Tn, Nn))))
+  
+  U_r <- sv$u[, 1:r, drop = FALSE]
+  D_r <- sv$d[1:r]
+  V_r <- sv$v[, 1:r, drop = FALSE]
+  
+  F0       <- sqrt(Tn) * U_r                            # T x r
+  Lambda0  <- V_r %*% diag(D_r / sqrt(Tn), nrow = r)    # N x r
+  
+  # --- 3) Idiosyncratic variances (R0, diagonal) from residuals X - F0 %*% t(Lambda0) ---
+  E0 <- X_svd - F0 %*% t(Lambda0)
+  R_diag <- colMeans(E0^2)  # N x 1
+  R_diag[!is.finite(R_diag)] <- 1e-4
+  R_diag <- pmax(R_diag, 1e-4)
+  R0 <- diag(R_diag, nrow = Nn)
+  
+  # --- 4) Factor dynamics: independent AR(1) for each factor ---
+  phi <- rep(NA_real_, r)
+  sig_u <- rep(NA_real_, r)
+  for (j in seq_len(r)) {
+    y  <- F0[-1, j]
+    x  <- F0[-Tn, j]
+    # OLS without intercept: f_t = phi * f_{t-1} + u_t
+    phi_j <- sum(x * y) / sum(x * x)
+    if (!is.finite(phi_j)) phi_j <- 0
+    phi_j <- max(-ar_cap, min(ar_cap, phi_j))  # stability cap
+    u_j   <- y - phi_j * x
+    s2_j  <- mean(u_j^2)
+    if (!is.finite(s2_j) || s2_j <= 0) s2_j <- 1e-4
+    phi[j]  <- phi_j
+    sig_u[j] <- s2_j
+  }
+  A0 <- diag(phi, nrow = r)                 # r x r transition matrix
+  Q0 <- diag(pmax(sig_u, 1e-4), nrow = r)   # r x r state noise covariance
+  
+  # --- 5) Build the state-space model for KFAS ---
+  # Measurement eq: x_t = Λ f_t + ε_t,  ε_t ~ N(0, R0)
+  # Transition eq:  f_t = A f_{t-1} + u_t,  u_t ~ N(0, Q0)
+  Zt <- array(0, dim = c(Nn, r, 1)); Zt[, , 1] <- Lambda0
+  Tt <- array(A0, dim = c(r, r, 1))
+  Rt <- diag(r)
+  
+  model <- SSModel(
+    X_std ~ -1 + SSMcustom(
+      Z = Zt, T = Tt, R = Rt,
+      Q = Q0, a1 = rep(0, r), P1 = diag(10, r),
+      state_names = paste0("F", 1:r)
+    ),
+    H = R0
+  )
+  
+  list(
+    X_std   = X_std,          # standardized data used in measurement equation
+    r       = r,
+    F0      = F0,             # initial factors (T x r)
+    Lambda0 = Lambda0,        # initial loadings (N x r)
+    R0      = R0,             # idiosyncratic variance matrix
+    A0      = A0,             # AR(1) transition matrix
+    Q0      = Q0,             # factor innovation variance
+    model   = model           # SSModel ready for EM / Kalman
+  )
+}
+
+# ====== USAGE EXAMPLE ======
+# Assuming df_train_std, vars_X, r_fixed already exist:
+init <- dfm_init(df_train_std, vars_X, r_fixed = r_fixed)
+
+# Optionally: first smoothing pass with initial parameters
+ks0 <- KFS(init$model, smoothing = c("state", "mean"))
+F_smooth0 <- ks0$alphahat            # T x r smoothed factors
+X_fitted0 <- signal(init$model)$signal  # fitted measurements
+
+# Optional: run EM to optimize H and Q (and optionally Z, T if parameterized)
+# fit <- fitSSM(init$model,
+#               inits = c(log(diag(init$model$H)), log(diag(init$model$Q))),
+#               method = "BFGS")
+# mod_hat <- fit$model
+# ks_hat  <- KFS(mod_hat, smoothing = c("state", "mean"))
+
+# ============================================================
+# ML estimation (quasi-ML) of H (idiosyncratic), Q (factor shocks), A (AR(1))
+# Λ (loadings) kept fixed to PCA for identification.
+# ============================================================
+
+library(KFAS)
+
+ssm0   <- init$model
+Nn     <- nrow(ssm0$y)             # number of series (N)
+r      <- dim(ssm0$Z)[2]           # number of factors (r)
+phi_cap <- 0.98                     # stability cap for AR(1)
+
+# --- Parameterization & constraints ---
+# par = [ log(diag(H))_(N) , log(diag(Q))_(r) , atanh(phi/phi_cap)_(r) ]
+par0 <- c(
+  log(diag(ssm0$H)),                        # H diagonal (positive)
+  log(diag(ssm0$Q)),                        # Q diagonal (positive)
+  atanh(diag(ssm0$T[,,1]) / phi_cap)        # AR(1) φ_j ∈ (-phi_cap, phi_cap)
+)
+
+# Map parameter vector -> model (H, Q, A updated; Λ fixed)
+updatefn <- function(par, model) {
+  idxH <- 1:Nn
+  idxQ <- (Nn + 1):(Nn + r)
+  idxA <- (Nn + r + 1):(Nn + 2*r)
+  
+  Hdiag <- exp(par[idxH])                    # ensure > 0
+  Qdiag <- exp(par[idxQ])                    # ensure > 0
+  phi   <- phi_cap * tanh(par[idxA])         # ensure |phi| < phi_cap
+  
+  model$H[,]     <- diag(Hdiag, nrow = Nn)
+  model$Q[,]     <- diag(Qdiag, nrow = r)
+  model$T[,,1]   <- diag(phi, nrow = r)      # AR(1) diagonal transition
+  # Z (loadings) and R (identity) are kept as-in (from PCA init)
+  model
+}
+
+# --- Fit by BFGS (quasi-ML) ---
+fit <- fitSSM(
+  inits    = par0,
+  model    = ssm0,
+  updatefn = updatefn,
+  method   = "BFGS",
+  control  = list(maxit = 300, reltol = 1e-8)
+)
+
+mod_hat <- fit$model
+
+# --- Smoothing with estimated parameters ---
+ks_hat <- KFS(mod_hat, smoothing = c("state", "mean"))
+F_smooth <- ks_hat$alphahat               # T x r smoothed factors
+X_fitted <- signal(mod_hat)$signal        # T x N fitted measurements (in standardized units)
+
+# --- Basic diagnostics ---
+ll    <- as.numeric(logLik(mod_hat))
+k_par <- length(par0)
+n_obs <- sum(is.finite(mod_hat$y))        # total observed measurements
+AIC   <- -2*ll + 2*k_par
+BIC   <- -2*ll + k_par*log(n_obs)
+
+cat(sprintf("\n=== Quasi-ML fit ===\nlogLik = %.2f | AIC = %.2f | BIC = %.2f | k = %d | n = %d\n",
+            ll, AIC, BIC, k_par, n_obs))
+
+# Standardized recursive residuals (one-step-ahead)
+res_std <- residuals(mod_hat, type = "recursive", standardized = TRUE)
+# You can inspect series-wise residual distribution / autocorrelation as needed.
+
+# --- Extract estimated components (useful for reporting) ---
+H_hat   <- mod_hat$H[,]                   # diagonal idiosyncratic variances (N x N)
+Q_hat   <- mod_hat$Q[,]                   # diagonal factor shock variances (r x r)
+A_hat   <- mod_hat$T[,,1]                 # AR(1) coefficients (r x r, diagonal)
+Lambda  <- mod_hat$Z[,,1]                 # loadings (N x r) — fixed from PCA init
+
+# (Optional) Reconstruct idiosyncratic residuals in standardized units:
+# E_hat = y - Λ * f |t (use smoothed states for f)
+Y_std_hat <- t(Lambda %*% t(F_smooth))    # T x N
+E_hat <- mod_hat$y - t(Y_std_hat)         # N x T in KFAS, so transpose back if needed
+# NOTE: KFAS stores y as N x T; signal() returns T x N; be mindful of dims if you use these.
+
+# ============================================================
+# Forecasting h steps ahead (in transformed/standardized units)
+# ============================================================
+
+h_steps <- 4L
+
+# Extend the model with h rows of NA to obtain prediction for the measurements
+mod_fc <- mod_hat
+Y_obs  <- mod_fc$y                         # N x T
+Y_aug  <- cbind(Y_obs, matrix(NA_real_, nrow = Nn, ncol = h_steps))
+mod_fc$y <- Y_aug
+
+# Filter forward to get one-step-ahead predictions
+kf_fc <- KFS(mod_fc, filtering = "state", smoothing = "none")
+
+# Predicted signals (measurement means) for the whole augmented sample:
+sig_aug <- signal(mod_fc)$signal           # (T + h) x N  in standardized units
+
+# Grab only the last h rows (forecasts)
+pred_transformed <- sig_aug[(nrow(sig_aug) - h_steps + 1):nrow(sig_aug), , drop = FALSE]
+colnames(pred_transformed) <- colnames(init$X_std)  # same measurement names (vars_X order)
+
+# ============================================================
+# Map forecasts to your target variables and back-transform to levels (optional)
+# ============================================================
+# pred_transformed is in the *measurement space* (standardized transformed units).
+# If your targets vars_Y are among the measurement variables, subset and de-standardize using
+# the moments you use in your pipeline (mean/sd from the training window you prefer).
+# Otherwise, build a Y from the factors via a separate mapping (like your OLS step).
+
+# Example: if vars_Y ⊆ colnames(pred_transformed) and you want to de-standardize with
+# full-history moments (Y_mean, Y_sd) as you already do for nowcasts:
+
+pred_Y_tr <- pred_transformed[, vars_Y, drop = FALSE]  # transformed (Δlog*100 or diff), std units
+# De-standardize back to transformed units:
+# (Assumes you have Y_mean and Y_sd consistent with how you standardized Y in your pipeline.)
+pred_Y_transformed <- sweep(pred_Y_tr, 2, Y_sd, `*`)
+pred_Y_transformed <- sweep(pred_Y_transformed, 2, Y_mean, `+`)
+
+# If you want back to *levels*, reuse your back-transform logic per variable:
+#   - logdiff:  Level_{t+h} = Base_{t+h-1} * exp( y_{t+h} / 100 )
+#   - diff:     Level_{t+h} = Base_{t+h-1} + y_{t+h}
+# where Base depends on the horizon (for h=1 use L_t, for h=4 use L_{t+3}).
+# You already implemented this in your PCA+VAR part; plug the same helper here.
+
+# (Optional) Assemble a tidy forecast table
+fc_dates <- seq(from = max(df_train_std$date), by = "quarter", length.out = h_steps)
+now_table_transformed_ssm <- data.frame(
+  date = fc_dates,
+  pred_Y_transformed,
+  row.names = NULL,
+  check.names = FALSE
+)
+
+print(head(now_table_transformed_ssm, 4))
