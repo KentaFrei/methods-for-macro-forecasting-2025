@@ -78,8 +78,7 @@ transform_variable <- function(x, transform_type) {
   }
 }
 
-
-# 4) Applica le trasformazioni usando ts_key (chiave breve)
+# Apply transformations using ts_key 
 for (i in seq_len(nrow(metadata))) {
   key <- metadata$ts_key[i]
   t_type <- metadata$transform[i]
@@ -88,20 +87,18 @@ for (i in seq_len(nrow(metadata))) {
   }
 }
 
-# 5) Rimuovi la prima riga (diff) e droppa colonne problematiche (tutte NA o varianza nulla)
+# Remove first raw (diff) e drop problematic columns (all NA or 0 variance)
 df_train_clean <- df_train_clean[-1, ]
 is_all_na  <- vapply(df_train_clean, function(x) all(is.na(x)), logical(1))
 df_train_clean <- df_train_clean[, !is_all_na, drop = FALSE]
-
-# rimuovi colonne con sd ~ 0 (dopo la trasformazione)
 keep_idx <- c(TRUE, sapply(df_train_clean[-1], function(x) sd(x, na.rm=TRUE) > 1e-8))
 df_train_clean <- df_train_clean[, keep_idx, drop = FALSE]
 
-# 6) Standardizza
+# Standardization
 df_train_std <- df_train_clean
 df_train_std[-1] <- scale(df_train_clean[-1])
 
-# 7) Definisci i target REALI (chiavi corte) e poi X
+# Define targets (ts_key) than X
 vars_Y <- c("rvgdp", "cpi", "wkfreuro")
 missing_y <- setdiff(vars_Y, names(df_train_std))
 if (length(missing_y)) stop(paste("Missing targets:", paste(missing_y, collapse=", ")))
@@ -118,7 +115,7 @@ adf_results <- sapply(df_train_clean[-1], function(x) {
 })
 adf_results <- sort(adf_results)
 
-# Saving the means and sd just in case we need later
+# Saving means and sd 
 scaler_params <- data.frame(
   variable = names(df_train_clean)[-1],
   mean = apply(df_train_clean[-1], 2, mean, na.rm = TRUE),
@@ -143,10 +140,9 @@ if (t0_idx > last_origin_idx) {
   )
 }
 
-# <<< NUOVO: drop variabili con troppi NA nel training iniziale (dopo che t0_idx esiste)
+# Drop variables with <30% of NA from training set for Bai-Ng criterion
 na_frac <- colMeans(is.na(as.matrix(df_train_std[1:t0_idx, vars_X, drop = FALSE])))
 vars_X <- setdiff(vars_X, names(na_frac[na_frac > 0.30]))
-# >>>
 
 # Final guardrails
 t0_idx <- max(1, t0_idx)
@@ -176,31 +172,31 @@ cat("Last origin -> targets h1/h4:   ", as.character(origin_dates[length(origin_
 X0 <- as.matrix(df_train_std[1:t0_idx, vars_X, drop = FALSE])
 Y0 <- as.matrix(df_train_std[1:t0_idx, vars_Y,     drop = FALSE])
 
+# TESTS
 sum(names(df_train_clean)[-1] != names(df_train)[-1])
-# 1) Quante colonne del df sono state DAVVERO trasformate (tra quelle rimaste)?
+
+# How many columns are transformed withing the remaining ones?
 common <- intersect(names(df_train_clean)[-1], names(df_train)[-1])
 changed <- sum(sapply(common, function(nm) !identical(df_train_clean[[nm]], df_train[[nm]][-1])))
 cat("Serie effettivamente trasformate (tra quelle rimaste): ", changed, "\n")
 
-# 2) Quali colonne sono state rimosse (ad es. tutte NA dopo logdiff o sd≈0)?
+# Which columns are deleted (es. all NA after logdiff or sd≈0)?
 dropped <- setdiff(names(df_train)[-1], names(df_train_clean)[-1])
 cat("Colonne rimosse: ", paste(dropped, collapse = ", "), "\n")
 
-# 3) (opzionale) Verifica quante sono finite tutte NA PRIMA del drop
-# (se vuoi, salva una copia prima del filtro e ripeti il test sulle NA)
-all_na_cols <- names(df_train_clean)[colSums(!is.na(df_train_clean)) == 0]
-cat("Colonne tutte NA (se presenti): ", paste(all_na_cols, collapse = ", "), "\n")
-
-# 4) Dimensioni X/Y per sicurezza
+# Dimension X/Y for safety
 cat("Dim X0: ", paste(dim(X0), collapse=" x "), " | Dim Y0: ", paste(dim(Y0), collapse=" x "), "\n")
 
-#ci sono davvero NA in X0
+# Are there NA in X0?
 X0 <- as.matrix(df_train_std[1:t0_idx, vars_X, drop = FALSE])
 sort(colSums(is.na(X0)), decreasing = TRUE)[1:10]
 anyNA(X0)
 
+# ================================
+# 3. Bai-Ng factors selection
+# ================================
 
-# --- Bai & Ng: definizione funzione PRIMA dell'uso ---
+# --- Definition before applying ---
 bn_select_r_icp2 <- function(X, rmax = 10) {
   X <- as.matrix(X)
   Tn <- nrow(X); Nn <- ncol(X)
@@ -219,7 +215,7 @@ bn_select_r_icp2 <- function(X, rmax = 10) {
   list(r = r_sel, IC = data.frame(r = rgrid, ICp2 = ICp2))
 }
 
-# --- Imputazione semplice SOLO per la selezione di r ---
+# --- Simple imputation ONLY for r selection ---
 X0_imp <- X0
 X0_imp[!is.finite(X0_imp)] <- NA
 for (j in seq_len(ncol(X0_imp))) {
@@ -234,7 +230,6 @@ message("Bai–Ng ICp2 (cap=10) selected r = ", r_fixed)
 # 4. Forecasting with PCA + VAR (Dynamic Factor Model)
 # ================================
 
-library(vars)
 nY <- length(vars_Y)
 nOrg <- length(oos_origin_idx)
 h_long <- 4
@@ -244,7 +239,7 @@ L_ols <- 1
 pred_h1_real <- pred_h4_real <- real_h1_real <- real_h4_real <-
   matrix(NA, nrow = nOrg, ncol = nY, dimnames = list(NULL, vars_Y))
 
-# nuove matrici per versione standardizzata (per metriche)
+# new matrices for standardised version (for metrics)
 real_h1_std <- real_h4_std <- pred_h1_std_mat <- pred_h4_std_mat <-
   matrix(NA, nrow = nOrg, ncol = nY, dimnames = list(NULL, vars_Y))
 
@@ -303,21 +298,21 @@ for (tcut in oos_origin_idx) {
   x_h1_const <- c(1, F_h1, F_t)
   x_h4_const <- c(1, F_h4, F_h3)
   
-  # previsioni in scala standardizzata (finestra)
+  # standardised scale forecasts (window)
   pred_h1_std <- as.numeric(x_h1_const %*% beta_hat)
   pred_h4_std <- as.numeric(x_h4_const %*% beta_hat)
   pred_h1_std_mat[k, ] <- pred_h1_std
   pred_h4_std_mat[k, ] <- pred_h4_std
   
-  # riportiamo alla scala reale (diff/logdiff della finestra)
+  # return to real scala (diff/logdiff of window)
   pred_h1_real[k, ] <- pred_h1_std * Y_sd + Y_mean
   pred_h4_real[k, ] <- pred_h4_std * Y_sd + Y_mean
   
-  # actuals in scala reale (coerente con pred_h*_real)
+  # actuals at real scale (for pred_h*_real)
   real_h1_real[k, ] <- as.numeric(df_train_clean[tcut + 1, vars_Y])
   real_h4_real[k, ] <- as.numeric(df_train_clean[tcut + h_long, vars_Y])
   
-  # actuals in scala standardizzata (stesse mean/sd della finestra, per metriche)
+  # actuals in standardized scale  (same mean/sd of window, for metrics)
   real_h1_std[k, ] <- (as.numeric(df_train_clean[tcut + 1, vars_Y]) - Y_mean) / Y_sd
   real_h4_std[k, ] <- (as.numeric(df_train_clean[tcut + h_long, vars_Y]) - Y_mean) / Y_sd
 }
@@ -326,21 +321,21 @@ cat("\n=== Forecast loop completed ===\n")
 
 
 # ================================
-# 5) OOS metrics + Back-transformation to levels + Results table + Plots
+# 5) OOS metrics + Back-transformation to levels
 # ================================
 
-# ---- Safety checks (evitano errori criptici) ----
+# ---- Safety checks (avoid cryptic errors) ----
 req_objs <- c("vars_Y","metadata","df_train",
               "origin_dates","h1_dates","h4_dates","oos_origin_idx","h_long",
               "pred_h1_real","pred_h4_real","real_h1_real","real_h4_real")
 miss <- req_objs[!vapply(req_objs, exists, logical(1))]
-if (length(miss)) stop("Mancano questi oggetti: ", paste(miss, collapse=", "))
+if (length(miss)) stop("Those objects are missing: ", paste(miss, collapse=", "))
 
 # ---- Helper: RMSE / MAE ----
 rmse <- function(e) sqrt(mean(e^2, na.rm = TRUE))
 mae  <- function(e) mean(abs(e), na.rm = TRUE)
 
-# ---- 5.1 Metrics nelle unità trasformate (quelle del modello) ----
+# ---- Metrics in transformed scale ----
 rmse_h1_tr <- sapply(seq_len(ncol(real_h1_real)), function(j) rmse(real_h1_real[, j] - pred_h1_real[, j]))
 rmse_h4_tr <- sapply(seq_len(ncol(real_h4_real)), function(j) rmse(real_h4_real[, j] - pred_h4_real[, j]))
 mae_h1_tr  <- sapply(seq_len(ncol(real_h1_real)), function(j) mae(real_h1_real[, j] - pred_h1_real[, j]))
@@ -357,18 +352,17 @@ metrics_transformed <- data.frame(
 cat("\n=== Forecast Evaluation (Transformed Units) ===\n")
 print(metrics_transformed)
 
-# ---- 5.2 Back-transform ai livelli (h=1 e h=4) ----
-# Mappa ts_key -> transform
+# ---- Back-transform to levels (h=1 e h=4) ----
 get_transform <- function(var) {
   i <- match(var, metadata$ts_key)
   tr <- if (is.na(i)) NA_character_ else metadata$transform[i]
   ifelse(is.na(tr), "none", tolower(tr))
 }
 
-# livelli storici (non trasformati)
+# historical levels (non transformed)
 levels_df <- df_train[, c("date", vars_Y)]
 
-# Pre-allocazione contenitori (liste -> data.frame)
+# Pre-allocation of containers (lists -> data.frame)
 pred_h1_level <- setNames(vector("list", length(vars_Y)), vars_Y)
 pred_h4_level <- setNames(vector("list", length(vars_Y)), vars_Y)
 real_h1_level <- setNames(vector("list", length(vars_Y)), vars_Y)
@@ -376,20 +370,20 @@ real_h4_level <- setNames(vector("list", length(vars_Y)), vars_Y)
 
 for (v in vars_Y) {
   tr_v <- get_transform(v)
-  # basi per back-transform
+  # base for back-transform
   base_h1 <- levels_df[[v]][oos_origin_idx]             # L_t (per h=1)
   base_h4 <- levels_df[[v]][oos_origin_idx + (h_long-1)]# L_{t+3} (per h=4)
-  # reali (livelli) a t+1 e t+4
+  # reals (levels) a t+1 e t+4
   L_t1 <- levels_df[[v]][oos_origin_idx + 1]
   L_t4 <- levels_df[[v]][oos_origin_idx + h_long]
   
-  # previsioni nelle unità trasformate
+  # forecasts in transformed units
   yhat_h1 <- pred_h1_real[, v]
   yhat_h4 <- pred_h4_real[, v]
   
   # back-transform
   if (tr_v == "logdiff") {
-    # y è 100 * Δlog -> moltiplicatore exp(y/100)
+    # y is 100 * Δlog -> multiplier exp(y/100)
     pred_h1_level[[v]] <- base_h1 * exp(yhat_h1 / 100)
     pred_h4_level[[v]] <- base_h4 * exp(yhat_h4 / 100)
   } else if (tr_v == "diff") {
@@ -400,18 +394,18 @@ for (v in vars_Y) {
     pred_h4_level[[v]] <- yhat_h4
   }
   
-  # reali in livelli
+  # reals in levels
   real_h1_level[[v]] <- L_t1
   real_h4_level[[v]] <- L_t4
 }
 
-# Liste -> data.frame
+# Lists -> data.frame
 pred_h1_level <- as.data.frame(pred_h1_level, check.names = FALSE)
 pred_h4_level <- as.data.frame(pred_h4_level, check.names = FALSE)
 real_h1_level <- as.data.frame(real_h1_level, check.names = FALSE)
 real_h4_level <- as.data.frame(real_h4_level, check.names = FALSE)
 
-# ---- 5.3 Metriche in livelli ----
+# ---- Metrics in levels ----
 rmse_h1_lvl <- sapply(vars_Y, function(v) rmse(real_h1_level[[v]] - pred_h1_level[[v]]))
 rmse_h4_lvl <- sapply(vars_Y, function(v) rmse(real_h4_level[[v]] - pred_h4_level[[v]]))
 mae_h1_lvl  <- sapply(vars_Y, function(v) mae(real_h1_level[[v]] - pred_h1_level[[v]]))
@@ -428,14 +422,14 @@ metrics_levels <- data.frame(
 cat("\n=== Forecast Evaluation (Levels) ===\n")
 print(metrics_levels)
 
-# ---- 5.4 Costruisci oos_results completo (trasformato + livelli) ----
+# ---- Build oos_results (trasformed + levels) ----
 oos_results <- data.frame(
   origin_date = origin_dates,
   h1_date = h1_dates,
   h4_date = h4_dates
 )
 
-# transformed (come avevi già)
+# transformed 
 oos_results <- cbind(
   oos_results,
   setNames(as.data.frame(pred_h1_real), paste0(vars_Y, "_pred_h1_tr")),
@@ -457,7 +451,7 @@ cat("\n=== OOS results (head) ===\n")
 print(head(oos_results, 5))
 
 # ================================
-# 5.5 Plot — scala trasformata (model units)
+#  6. Plot — OOS transformed scale (model units)
 # ================================
 library(ggplot2); library(dplyr); library(tidyr)
 graphics.off()
@@ -511,7 +505,7 @@ p_tr <- ggplot(long_all_tr, aes(x = date, y = value, color = type, linetype = ty
 print(p_tr)
 
 # ================================
-# 5.6 Plot — livelli (back-transformed)
+#  6.1 Plot — OOS levels (back-transformed)
 # ================================
 plot_df_h1_lvl <- oos_results %>%
   dplyr::select(h1_date, dplyr::ends_with("_pred_h1_lvl"), dplyr::ends_with("_real_h1_lvl")) %>%
@@ -567,14 +561,14 @@ unique(diff(sort(unique(long_all_lvl$date))))
 
 
 # =========================
-# "NOW" FORECASTS from latest data (h=1 and h=4)
+#   7. "NOW" FORECASTS from latest data (h=1 and h=4)
 # =========================
 
-# Keep only observed data up to today (adjust the date if needed)
+# Keep only observed data up to today 
 df_train_clean <- df_train_clean %>%
   dplyr::filter(date <= as.Date("2025-07-01"))  # last observed quarter
 
-# Decide predictor set for NOW: prefer vars_X_oos if available (frozen on initial 80%)
+# Decide predictor set for NOW (frozen on initial 80%)
 X_now_names <- vars_X
 
 # Build working frame
@@ -597,7 +591,7 @@ Y_mean <- apply(Y_all, 2, mean, na.rm = TRUE)
 Y_sd   <- apply(Y_all, 2, sd,   na.rm = TRUE); Y_sd[Y_sd == 0] <- 1
 Y_std  <- scale(Y_all, center = Y_mean, scale = Y_sd)
 
-# Imputa SOLO le X già standardizzate: NA -> 0 (che in scala std = media della variabile)
+# Only impute standardised X values: NA -> 0 (which on a standard scale = mean of the variable)
 X_std_imp <- X_std
 for (j in seq_len(ncol(X_std_imp))) {
   X_std_imp[is.na(X_std_imp[, j]), j] <- 0
@@ -618,7 +612,7 @@ if (exists("r_fixed")) {
 # PCA on standardized X (full history)
 pca_now <- prcomp(X_std_imp, center = FALSE, scale. = FALSE)
 
-# --- (3) Protezione dimensionale su r ---
+# Dimensional protection of r 
 r_use <- min(r_now, ncol(pca_now$x))
 F_all <- pca_now$x[, 1:r_use, drop = FALSE]
 colnames(F_all) <- paste0("F", seq_len(r_use))
@@ -631,14 +625,14 @@ stopifnot(Tn > L_ols)
 F_curr <- F_all[(1+L_ols):Tn, , drop = FALSE]        # F_t
 F_lag1 <- F_all[1:(Tn-L_ols), , drop = FALSE]        # F_{t-1}
 
-# Design matrix con nomi stabili [F1..Fr | L1_F1..L1_Fr]
+# Design matrix with stable names [F1..Fr | L1_F1..L1_Fr]
 X_ols <- cbind(F_curr, F_lag1)
 colnames(X_ols) <- c(paste0("F", 1:r), paste0("L1_F", 1:r))
 Xdf <- as.data.frame(X_ols)
 
 Y_ols <- Y_std[(1+L_ols):Tn, , drop = FALSE]         # align Y
 
-# --- (2) OLS robusto ai nomi dei coefficienti ---
+# --- Robust OLS to coefficients names---
 X_ols_const_names <- c("(Intercept)", colnames(X_ols))
 beta_hat_now <- array(
   NA_real_,
@@ -649,7 +643,7 @@ beta_hat_now <- array(
 for (j in seq_len(ncol(Y_ols))) {
   fit_j <- lm(Y_ols[, j] ~ ., data = Xdf)  # include intercept
   cf <- coef(fit_j)
-  # riordina/riempie (se manca qualcosa, mette 0)
+  # reordnung/cleaning (if something missing, put 0)
   beta_vec <- setNames(numeric(length(X_ols_const_names)), X_ols_const_names)
   beta_vec[names(cf)] <- cf
   beta_hat_now[, j] <- beta_vec
@@ -669,7 +663,7 @@ F_h3 <- sapply(fac_names, function(nm) fc_now$fcst[[nm]][3, "fcst"])  # F_{t+3}
 F_h4 <- sapply(fac_names, function(nm) fc_now$fcst[[nm]][4, "fcst"])  # F_{t+4}
 F_t  <- as.numeric(F_all[nrow(F_all), , drop = FALSE])                # F_t
 
-# Map factor forecasts to Y (std) usando lo stesso ordine dei coefficienti
+# Map factor forecasts to Y (std) using same ordnung of coefficients
 x_h1 <- c("(Intercept)" = 1,
           setNames(F_h1, paste0("F", 1:r)),
           setNames(F_t,  paste0("L1_F", 1:r)))
@@ -700,10 +694,10 @@ now_table <- data.frame(
 )
 
 # =========================
-# NOW: percorso h=1..4 e back-transform a livelli (ricorsivo)
+#   7.1. NOW: Route h=1..4 e back-transform to levels (recursive)
 # =========================
 
-# 1) Fattori previsti F_{t+1..t+4} dal VAR già stimato (fc_now)
+# Factors predicted F_{t+1..t+4} by the VAR already estimated (fc_now)
 fac_names <- colnames(F_all)
 get_fc <- function(step) sapply(fac_names, function(nm) fc_now$fcst[[nm]][step, "fcst"])
 F_h1 <- get_fc(1)
@@ -712,7 +706,7 @@ F_h3 <- get_fc(3)
 F_h4 <- get_fc(4)
 F_t  <- as.numeric(F_all[nrow(F_all), , drop = FALSE])
 
-# 2) Stesso ordine regressori dell'OLS: x_h = [ (Intercept), F_{t+h}, F_{t+h-1} ]
+# Same order as regressors of OLS: x_h = [ (Intercept), F_{t+h}, F_{t+h-1} ]
 make_xh <- function(F_h, F_hm1, r) {
   c("(Intercept)" = 1,
     setNames(F_h,   paste0("F", 1:r)),
@@ -724,7 +718,7 @@ x2 <- make_xh(F_h2, F_h1, r)
 x3 <- make_xh(F_h3, F_h2, r)
 x4 <- make_xh(F_h4, F_h3, r)
 
-# 3) Predizioni nelle UNITÀ TRASFORMATE (std -> real del modello)
+# Predictions in TRANSFORMED UNITS (std -> real of the model)
 yh1_std <- as.numeric(t(x1[X_ols_const_names]) %*% beta_hat_now)
 yh2_std <- as.numeric(t(x2[X_ols_const_names]) %*% beta_hat_now)
 yh3_std <- as.numeric(t(x3[X_ols_const_names]) %*% beta_hat_now)
@@ -736,7 +730,7 @@ yh3 <- yh3_std * Y_sd + Y_mean
 yh4 <- yh4_std * Y_sd + Y_mean
 names(yh1) <- names(yh2) <- names(yh3) <- names(yh4) <- vars_Y
 
-# 4) Back-transform ricorsivo ai LIVELLI
+# Recursive back-transform at LEVELS
 get_transform <- function(var) {
   i <- match(var, metadata$ts_key)
   tr <- if (is.na(i)) NA_character_ else metadata$transform[i]
@@ -746,17 +740,17 @@ get_transform <- function(var) {
 levels_df <- df_train[, c("date", vars_Y)]
 last_date <- max(df_train_clean$date, na.rm = TRUE)
 
-# ultimo livello osservato L_t per ogni Y
+# last observed level L_t for each Y
 L_t_vec <- setNames(numeric(length(vars_Y)), vars_Y)
 for (v in vars_Y) {
   L_t_val <- levels_df[[v]][levels_df$date == last_date]
   if (length(L_t_val) != 1 || !is.finite(L_t_val)) {
-    stop("NOW back-transform: non trovo L_t per variabile ", v)
+    stop("NOW back-transform: don't find L_t for variabile ", v)
   }
   L_t_vec[v] <- L_t_val
 }
 
-# Propagazione L_{t+h} a partire da L_t usando yh1..yh4
+# Propagation L_{t+h} starting from L_t using yh1..yh4
 L_h1 <- L_h2 <- L_h3 <- L_h4 <- setNames(numeric(length(vars_Y)), vars_Y)
 for (v in vars_Y) {
   tr_v <- get_transform(v)
@@ -777,7 +771,7 @@ for (v in vars_Y) {
   L_h1[v] <- L1; L_h2[v] <- L2; L_h3[v] <- L3; L_h4[v] <- L4
 }
 
-# 5) Tabelle finali
+# FINAL TABLES
 h1_date <- seq(last_date, by = "quarter", length.out = 2)[2]
 h4_date <- seq(last_date, by = "quarter", length.out = 5)[5]
 
@@ -799,8 +793,12 @@ now_table_levels <- data.frame(
   row.names = NULL, check.names = FALSE
 )
 
-print(now_table_transformed)  # unità trasformate (Δlog*100 o diff)
-print(now_table_levels) # livelli ricostruiti
+print(now_table_transformed)  # Transformed (Δlog*100 or diff)
+print(now_table_levels) # Levels
+
+# =========================
+#   8. NOW: PLOT VS KOF forecasts
+# =========================
 
 library(ggplot2)
 library(dplyr)
@@ -843,12 +841,12 @@ kof_pts <- bind_rows(
 pal_colors <- c("Our" = "#1f77b4", "KOF" = "#ff7f0e")
 pal_shapes <- c("Our" = 16,       "KOF" = 17)
 
-# assicurati che le date siano Date
+# ensure date are Date
 levels_recent$date <- as.Date(levels_recent$date)
 our_pts$date       <- as.Date(our_pts$date)
 kof_pts$date       <- as.Date(kof_pts$date)
 
-# --- NUOVO: etichette dei pannelli (facet) ---
+# Chart names
 facet_labels <- c(
   "rvgdp"    = "Real GDP",
   "cpi"      = "Inflation (CPI)",
@@ -870,7 +868,7 @@ p <- ggplot() +
     ncol   = 1,
     labeller = as_labeller(facet_labels)   # <-- NUOVO: titoli pannelli
   ) +
-  # --- NUOVO: legenda con etichette personalizzate ---
+# legenda 
   scale_color_manual(
     values = pal_colors,
     breaks = c("Our", "KOF"),
