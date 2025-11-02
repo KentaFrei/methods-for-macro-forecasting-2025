@@ -1,4 +1,9 @@
 # ================================
+# 0. Initialize renv
+# ================================
+source("renv/activate.R")
+
+# ================================
 # 1. Setup, Load Packages and Data
 # ================================
 
@@ -7,6 +12,8 @@ library(dplyr)
 library(vars)
 library(tidyr)
 library(urca)
+library(rlang)
+library(KFAS)
 
 
 kfilepath_data <- "C:/Users/kfree/OneDrive/Desktop/MASTER 3/MACRO FORECAST/DATASET/data_quarterly.csv"
@@ -14,8 +21,8 @@ kfilepath_metadata <- "C:/Users/kfree/OneDrive/Desktop/MASTER 3/MACRO FORECAST/D
 nfilepath_data <- "~/Documents/school/methods-for-macro-forecasting-2025/submission/data/data_quarterly.csv"
 nfilepath_metadata <- "~/Documents/school/methods-for-macro-forecasting-2025/submission/data/metadata_quarterly_en.csv"
 # Adjust depending on environment
-df <- utils::read.csv(kfilepath_data)
-metadata <- utils::read.csv(kfilepath_metadata)
+df <- utils::read.csv(nfilepath_data)
+metadata <- utils::read.csv(nfilepath_metadata)
 
 # ================================
 # 2. Data Preparation
@@ -453,7 +460,6 @@ print(head(oos_results, 5))
 # ================================
 #  6. Plot — OOS transformed scale (model units)
 # ================================
-library(ggplot2); library(dplyr); library(tidyr)
 graphics.off()
 
 plot_df_h1_tr <- oos_results %>%
@@ -800,11 +806,6 @@ print(now_table_levels) # Levels
 #   8. NOW: PLOT VS KOF forecasts
 # =========================
 
-library(ggplot2)
-library(dplyr)
-library(tidyr)
-library(rlang)
-
 last_date <- max(df_train_clean$date, na.rm = TRUE)
 h1_date   <- now_table_levels$target_h1_date[1]
 h4_date   <- now_table_levels$target_h4_date[1]
@@ -895,11 +896,15 @@ print(p)
 
 
 # ============================================
+#   9. STATE SPACE: Dynamic Factor Model Initialization (PCA/SVD → F0, Lambda0, R0, A0, Q0)
+# Compatible with KFAS: x_t = Λ f_t + e_t ; f_t = A f_{t-1} + u_t
+# ============================================
+# ============================================
 # STATE SPACE: Dynamic Factor Model Initialization (PCA/SVD → F0, Lambda0, R0, A0, Q0)
 # Compatible with KFAS: x_t = Λ f_t + e_t ; f_t = A f_{t-1} + u_t
 # ============================================
-#In your workflow, you currently have roughly these main parts:
-  
+#In our workflow, we currently have roughly these main parts:
+
 # Data loading + cleaning
 
 # Transformations (logdiff, diff, etc.)
@@ -910,7 +915,7 @@ print(p)
 
 # now we switch to STATE SPACE MODEL
 
-library(KFAS)
+
 
 dfm_init <- function(df_train_std, vars_X, r_fixed, ar_cap = 0.98) {
   stopifnot("date" %in% names(df_train_std))
