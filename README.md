@@ -78,8 +78,8 @@ _Currently selecting 10_
 * Prepares separate datasets for 1-quarter (h=1) and 1-year (h=4) horizons in both transformed and back-transformed levels
 * Creates two main plots: Transformed scale: “OOS Forecasts — Transformed Units”, Level scale: “OOS Forecasts — Back-transformed Levels”
 
-![Transformed Units](../images/6_transformed.png)
-![Back Transformed Units](../images/6_backtransformed.png)
+![Transformed Units](/images/6_transformed.png)
+![Back Transformed Units](/images/6_backtransformed.png)
 
 ### 7. NOW Forecasts
 
@@ -116,7 +116,7 @@ Forecast (levels) table
 * Facets plots by variable (Real GDP, CPI, Exchange Rate) with consistent color and shape legends
 * Produces a comparison chart titled “Forecast Comparison: Dynamic Factor Model (PCA+VAR) vs KOF”
 
-![Comparison Chart](../images/8_comparison.png)
+![Comparison Chart](/images/8_comparison.png)
 
 ### 9. STATE SPACE: Dynamic Factor Model Initialization (PCA/SVD → F0, Lambda0, R0, A0, Q0)
 
