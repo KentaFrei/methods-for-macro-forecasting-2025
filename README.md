@@ -123,8 +123,10 @@ Forecast (levels) table
 * State space model using KFAS
 * Estimate loadings, variance, persistence with max likelihood 
 * Uses Kalman filtering/smoothing to obtain latent factors and produce 1- and 4-quarter-ahead forecasts
- * Convert forecast back to original levels 
- ![State Space](../images/statespace_initial.png) 
+ * Convert forecast back to original levels
+   
+ ![State Space](/images/statespace_initial.png) 
+ 
  | variable | horizon | comparison             | difference     |
 |-----------|----------|------------------------|----------------|
 | cpi       | h1       | PCA_VAR_vs_KOF         | -0.04210944    |
