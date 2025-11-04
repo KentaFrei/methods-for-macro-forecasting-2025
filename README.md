@@ -78,8 +78,8 @@ _Currently selecting 10_
 * Prepares separate datasets for 1-quarter (h=1) and 1-year (h=4) horizons in both transformed and back-transformed levels
 * Creates two main plots: Transformed scale: “OOS Forecasts — Transformed Units”, Level scale: “OOS Forecasts — Back-transformed Levels”
 
-![Transformed Units](../images/6_transformed.png)
-![Back Transformed Units](../images/6_backtransformed.png)
+![Transformed Units](/images/6_transformed.png)
+![Back Transformed Units](/images/6_backtransformed.png)
 
 ### 7. NOW Forecasts
 
@@ -116,39 +116,17 @@ Forecast (levels) table
 * Facets plots by variable (Real GDP, CPI, Exchange Rate) with consistent color and shape legends
 * Produces a comparison chart titled “Forecast Comparison: Dynamic Factor Model (PCA+VAR) vs KOF”
 
-![Comparison Chart](../images/8_comparison.png)
+![Comparison Chart](/images/8_comparison.png)
 
-### State Spaced Enhanced
+### 9. STATE SPACE: Dynamic Factor Model Initialization (PCA/SVD → F0, Lambda0, R0, A0, Q0)
 
 * Workflow continues from PCA+VAR: after cleaning, transforming, standardizing, and selecting factors (`r_fixed`), we move to a **state-space DFM**
-* State space model using KAF
-* Estimate loadings, variance, persistence with max likelihood
-* Uses Kalman filtering/smoothing to obtain latent factors and produce 1- and 4-quarter-ahead forecasts
-* Convert forecast back to original levels
- ![State Space](../images/statespace_initial.png)
+* Runs SVD on standardized predictors to get initial factors and loadings, then estimates AR(1) dynamics and variances for each factor
+* Builds a **KFAS state-space model** (`SSModel`) linking factors to observed data
+* Optionally smooths factors and fits model parameters (H, Q, A) via quasi-ML using BFGS
+* Extracts estimated components and diagnostics (logLik, AIC, BIC, residuals)
+* Forecasts h steps ahead by extending the model and filtering forward
+* Maps factor forecasts to target variables, de-standardizes, and back-transforms to levels
+* Outputs a simple forecast table (`now_table_transformed_ssm`) for the next quarters
 
-| variable | horizon | comparison             | difference     |
-|-----------|----------|------------------------|----------------|
-| cpi       | h1       | PCA_VAR_vs_KOF         | -0.04210944    |
-| cpi       | h4       | PCA_VAR_vs_KOF         | 0.1107165      |
-| rvgdp     | h1       | PCA_VAR_vs_KOF         | -100.1508      |
-| rvgdp     | h4       | PCA_VAR_vs_KOF         | 592.0084       |
-| wkfreuro  | h1       | PCA_VAR_vs_KOF         | -0.003858505   |
-| wkfreuro  | h4       | PCA_VAR_vs_KOF         | -0.01239475    |
-| cpi       | h1       | StateSpace_vs_KOF      | -0.1155734     |
-| cpi       | h4       | StateSpace_vs_KOF      | -0.5488232     |
-| rvgdp     | h1       | StateSpace_vs_KOF      | 44.24803       |
-| rvgdp     | h4       | StateSpace_vs_KOF      | -2502.876      |
-| wkfreuro  | h1       | StateSpace_vs_KOF      | 0.5116945      |
-| wkfreuro  | h4       | StateSpace_vs_KOF      | 0.2324592      |
-| cpi       | h1       | PCA_VAR_vs_StateSpace  | 0.07346398     |
-| cpi       | h4       | PCA_VAR_vs_StateSpace  | 0.6595397      |
-| rvgdp     | h1       | PCA_VAR_vs_StateSpace  | -144.3988      |
-| rvgdp     | h4       | PCA_VAR_vs_StateSpace  | 3094.885       |
-| wkfreuro  | h1       | PCA_VAR_vs_StateSpace  | -0.5155530     |
-| wkfreuro  | h4       | PCA_VAR_vs_StateSpace  | -0.2448539     |
-
-### Ideas / Changes
-* AR(2) persistence
-* Idiosynchratic AR1 component for GDP and FX
-* Log diff vs diff for exchange rate
+* 
