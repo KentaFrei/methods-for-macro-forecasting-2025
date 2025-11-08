@@ -23,7 +23,7 @@ nfilepath_metadata <- "~/Documents/school/methods-for-macro-forecasting-2025/sub
 # Adjust depending on environment
 df <- utils::read.csv(nfilepath_data)
 metadata <- utils::read.csv(nfilepath_metadata)
-
+cutoff_pre_covid <- as.Date("2018-12-31")
 # ================================
 # 2. Data Preparation
 # ================================
@@ -33,7 +33,12 @@ if (!"ts_key" %in% names(metadata)) stop("Missing ts_key in metadata")
 # Filter to data we know (not projections)
 df_train <- df %>%
   mutate(date = as.Date(paste0(date, "-01"))) %>%        
-  filter(date < as.Date("2025-10-01")) %>%
+  filter(date <= cutoff_pre_covid) %>%
+  mutate(across(-date, as.numeric))
+
+df_post <- df %>%
+  mutate(date = as.Date(paste0(date, "-01"))) %>%
+  filter(date > cutoff_pre_covid) %>%
   mutate(across(-date, as.numeric))
 
 # Check to confirm no missing values
@@ -107,6 +112,8 @@ df_train_std[-1] <- scale(df_train_clean[-1])
 
 # Define targets (ts_key) than X
 vars_Y <- c("rvgdp", "cpi", "wkfreuro")
+growth_vars <- c("rvgdp")  # stay as Δlog×100 (growth)
+level_vars  <- setdiff(vars_Y, growth_vars)
 missing_y <- setdiff(vars_Y, names(df_train_std))
 if (length(missing_y)) stop(paste("Missing targets:", paste(missing_y, collapse=", ")))
 vars_X <- setdiff(names(df_train_std)[-1], vars_Y)
@@ -137,7 +144,6 @@ T_total <- nrow(df_train_std)
 t0_idx <- floor(0.8 * T_total)      # end index of initial training 
 h_long <- 4                         # 1-year ahead (quarterly)
 last_origin_idx <- T_total - h_long # last valid origin for h=4
-
 # If 80% falls too close to the end, adjust to guarantee room for h=4
 if (t0_idx > last_origin_idx) {
   t0_idx <- max(
@@ -377,34 +383,68 @@ real_h4_level <- setNames(vector("list", length(vars_Y)), vars_Y)
 
 for (v in vars_Y) {
   tr_v <- get_transform(v)
-  # base for back-transform
-  base_h1 <- levels_df[[v]][oos_origin_idx]             # L_t (per h=1)
-  base_h4 <- levels_df[[v]][oos_origin_idx + (h_long-1)]# L_{t+3} (per h=4)
-  # reals (levels) a t+1 e t+4
+  base_h1 <- levels_df[[v]][oos_origin_idx]
+  base_h4 <- levels_df[[v]][oos_origin_idx + (h_long - 1)]
   L_t1 <- levels_df[[v]][oos_origin_idx + 1]
   L_t4 <- levels_df[[v]][oos_origin_idx + h_long]
-  
-  # forecasts in transformed units
   yhat_h1 <- pred_h1_real[, v]
   yhat_h4 <- pred_h4_real[, v]
   
-  # back-transform
-  if (tr_v == "logdiff") {
-    # y is 100 * Δlog -> multiplier exp(y/100)
+  if (v %in% growth_vars) {
+    # Keep in Δlog×100 (QoQ %)
+    pred_h1_level[[v]] <- yhat_h1
+    pred_h4_level[[v]] <- yhat_h4
+    real_h1_level[[v]] <- real_h1_real[, v]
+    real_h4_level[[v]] <- real_h4_real[, v]
+  } else if (tr_v == "logdiff") {
+    # Back to levels (index / rate)
     pred_h1_level[[v]] <- base_h1 * exp(yhat_h1 / 100)
     pred_h4_level[[v]] <- base_h4 * exp(yhat_h4 / 100)
+    real_h1_level[[v]] <- L_t1
+    real_h4_level[[v]] <- L_t4
   } else if (tr_v == "diff") {
     pred_h1_level[[v]] <- base_h1 + yhat_h1
     pred_h4_level[[v]] <- base_h4 + yhat_h4
-  } else { # none
+    real_h1_level[[v]] <- L_t1
+    real_h4_level[[v]] <- L_t4
+  } else {
     pred_h1_level[[v]] <- yhat_h1
     pred_h4_level[[v]] <- yhat_h4
+    real_h1_level[[v]] <- L_t1
+    real_h4_level[[v]] <- L_t4
   }
-  
-  # reals in levels
-  real_h1_level[[v]] <- L_t1
-  real_h4_level[[v]] <- L_t4
 }
+
+# for (v in vars_Y) {
+#   tr_v <- get_transform(v)
+#   # base for back-transform
+#   base_h1 <- levels_df[[v]][oos_origin_idx]             # L_t (per h=1)
+#   base_h4 <- levels_df[[v]][oos_origin_idx + (h_long-1)]# L_{t+3} (per h=4)
+#   # reals (levels) a t+1 e t+4
+#   L_t1 <- levels_df[[v]][oos_origin_idx + 1]
+#   L_t4 <- levels_df[[v]][oos_origin_idx + h_long]
+#   
+#   # forecasts in transformed units
+#   yhat_h1 <- pred_h1_real[, v]
+#   yhat_h4 <- pred_h4_real[, v]
+#   
+#   # back-transform
+#   if (tr_v == "logdiff") {
+#     # y is 100 * Δlog -> multiplier exp(y/100)
+#     pred_h1_level[[v]] <- base_h1 * exp(yhat_h1 / 100)
+#     pred_h4_level[[v]] <- base_h4 * exp(yhat_h4 / 100)
+#   } else if (tr_v == "diff") {
+#     pred_h1_level[[v]] <- base_h1 + yhat_h1
+#     pred_h4_level[[v]] <- base_h4 + yhat_h4
+#   } else { # none
+#     pred_h1_level[[v]] <- yhat_h1
+#     pred_h4_level[[v]] <- yhat_h4
+#   }
+#   
+#   # reals in levels
+#   real_h1_level[[v]] <- L_t1
+#   real_h4_level[[v]] <- L_t4
+# }
 
 # Lists -> data.frame
 pred_h1_level <- as.data.frame(pred_h1_level, check.names = FALSE)
@@ -494,7 +534,7 @@ long_all_tr <- bind_rows(long_h1_tr, long_h4_tr) %>%
   )
 
 long_all_tr$variable <- recode(long_all_tr$variable,
-                               rvgdp    = "Real GDP",
+                               rvgdp    = "Real GDP Growth",
                                cpi  = "CPI",
                                wkfreuro = "Exchange Rate"
 )
@@ -545,7 +585,7 @@ long_all_lvl <- bind_rows(long_h1_lvl, long_h4_lvl) %>%
   )
 
 long_all_lvl$variable <- recode(long_all_lvl$variable,
-                                rvgdp    = "Real GDP",
+                                rvgdp    = "Real GDP Growth",
                                 cpi  = "CPI",
                                 wkfreuro = "Exchange Rate"
 )
@@ -571,9 +611,26 @@ unique(diff(sort(unique(long_all_lvl$date))))
 # =========================
 
 # Keep only observed data up to today 
-df_train_clean <- df_train_clean %>%
-  dplyr::filter(date <= as.Date("2025-07-01"))  # last observed quarter
+# Use full dataset up to today for the NOW forecast (post-training)
+df_train_clean <- df %>%
+  mutate(date = as.Date(paste0(date, "-01"))) %>%
+  mutate(across(-date, as.numeric)) %>%
+  filter(date <= as.Date("2025-07-01"))
 
+for (i in seq_len(nrow(metadata))) {
+  key <- metadata$ts_key[i]
+  t_type <- metadata$transform[i]
+  if (!is.na(t_type) && key %in% names(df_train_clean)) {
+    df_train_clean[[key]] <- transform_variable(df_train_clean[[key]], t_type)
+  }
+}
+
+# Remove first row after differencing
+df_train_clean <- df_train_clean[-1, ]
+
+# Standardize using the same approach as before
+df_train_std <- df_train_clean
+df_train_std[-1] <- scale(df_train_clean[-1])
 # Decide predictor set for NOW (frozen on initial 80%)
 X_now_names <- vars_X
 
@@ -743,7 +800,9 @@ get_transform <- function(var) {
   ifelse(is.na(tr), "none", tolower(tr))
 }
 
-levels_df <- df_train[, c("date", vars_Y)]
+levels_df <- df %>%
+  mutate(date = as.Date(paste0(date, "-01"))) %>%
+  dplyr::select(date, all_of(vars_Y))
 last_date <- max(df_train_clean$date, na.rm = TRUE)
 
 # last observed level L_t for each Y
@@ -761,7 +820,10 @@ L_h1 <- L_h2 <- L_h3 <- L_h4 <- setNames(numeric(length(vars_Y)), vars_Y)
 for (v in vars_Y) {
   tr_v <- get_transform(v)
   Lt   <- L_t_vec[v]
-  if (tr_v == "logdiff") {
+  if (v %in% growth_vars) {
+    # GDP stays in % growth
+    L1 <- yh1[v]; L2 <- yh2[v]; L3 <- yh3[v]; L4 <- yh4[v]
+  } else if (tr_v == "logdiff") {
     L1 <- Lt * exp(yh1[v] / 100)
     L2 <- L1 * exp(yh2[v] / 100)
     L3 <- L2 * exp(yh3[v] / 100)
@@ -771,11 +833,30 @@ for (v in vars_Y) {
     L2 <- L1 + yh2[v]
     L3 <- L2 + yh3[v]
     L4 <- L3 + yh4[v]
-  } else { # none
+  } else {
     L1 <- yh1[v]; L2 <- yh2[v]; L3 <- yh3[v]; L4 <- yh4[v]
   }
   L_h1[v] <- L1; L_h2[v] <- L2; L_h3[v] <- L3; L_h4[v] <- L4
 }
+
+# for (v in vars_Y) {
+#   tr_v <- get_transform(v)
+#   Lt   <- L_t_vec[v]
+#   if (tr_v == "logdiff") {
+#     L1 <- Lt * exp(yh1[v] / 100)
+#     L2 <- L1 * exp(yh2[v] / 100)
+#     L3 <- L2 * exp(yh3[v] / 100)
+#     L4 <- L3 * exp(yh4[v] / 100)
+#   } else if (tr_v == "diff") {
+#     L1 <- Lt + yh1[v]
+#     L2 <- L1 + yh2[v]
+#     L3 <- L2 + yh3[v]
+#     L4 <- L3 + yh4[v]
+#   } else { # none
+#     L1 <- yh1[v]; L2 <- yh2[v]; L3 <- yh3[v]; L4 <- yh4[v]
+#   }
+#   L_h1[v] <- L1; L_h2[v] <- L2; L_h3[v] <- L3; L_h4[v] <- L4
+# }
 
 # FINAL TABLES
 h1_date <- seq(last_date, by = "quarter", length.out = 2)[2]
@@ -820,9 +901,17 @@ our_pts <- bind_rows(
   now_table_levels %>% transmute(variable, date = target_h4_date, value = forecast_h4_level, horizon = "h4", source = "Our")
 )
 
-df_kof_levels <- df %>%
-  dplyr::mutate(date = as.Date(paste0(date, "-01"))) %>%
-  dplyr::select(date, all_of(vars_Y))
+df_growth <- df %>%
+  mutate(date = as.Date(paste0(date, "-01"))) %>%
+  arrange(date) %>%
+  mutate(rvgdp_growth = c(NA, diff(log(rvgdp)) * 100))  # QoQ %
+
+# Replace GDP level with growth in KOF comparison
+df_kof_growth <- df_growth %>%
+  dplyr::select(date, rvgdp_growth, cpi, wkfreuro) %>%
+  rename(rvgdp = rvgdp_growth)
+
+df_kof_levels <- df_kof_growth
 
 get_kof_value <- function(date_target, varname) {
   if (!varname %in% names(df_kof_levels)) return(NA_real_)
@@ -849,7 +938,7 @@ kof_pts$date       <- as.Date(kof_pts$date)
 
 # Chart names
 facet_labels <- c(
-  "rvgdp"    = "Real GDP",
+  "rvgdp"    = "Real GDP Growth",
   "cpi"      = "Inflation (CPI)",
   "wkfreuro" = "CHF/EUR Exchange Rate"
 )
