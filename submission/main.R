@@ -239,6 +239,53 @@ bn <- bn_select_r_icp2(X0_imp, rmax = 10)
 r_fixed <- bn$r
 message("Bai–Ng ICp2 (cap=10) selected r = ", r_fixed)
 
+pca_res <- prcomp(X0_imp, center = TRUE, scale. = TRUE)
+
+# Extract variance explained
+eigvals <- pca_res$sdev^2
+var_explained <- eigvals / sum(eigvals)
+cumvar_explained <- cumsum(var_explained)
+
+df_pca <- data.frame(
+  Component = seq_along(eigvals),
+  Variance = var_explained,
+  Cumulative = cumvar_explained
+)
+
+# --- Step 3: Bai–Ng selection (if not yet run) ---
+bn <- bn_select_r_icp2(X0_imp, rmax = 50)
+r_selected <- bn$r
+
+# --- Step 4: Plot cumulative variance explained ---
+library(ggplot2)
+
+ggplot(df_pca, aes(x = Component, y = Cumulative)) +
+  geom_line(color = "steelblue", linewidth = 1) +
+  geom_point(color = "steelblue", size = 2) +
+  geom_vline(xintercept = r_selected, linetype = "dashed", color = "red", linewidth = 0.8) +
+  annotate(
+    "text", 
+    x = r_selected + 0.3, 
+    y = cumvar_explained[r_selected], 
+    label = paste0("Bai–Ng selected r = ", r_selected),
+    color = "red", 
+    hjust = 0, 
+    vjust = -0.5, 
+    size = 4
+  ) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(
+    title = "Cumulative Variance Explained by Principal Components",
+    subtitle = "Dashed red line = Bai–Ng selected number of factors",
+    x = "Number of Factors (Principal Components)",
+    y = "Cumulative Variance Explained (%)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold")
+  )
+
 # ================================
 # 4. Forecasting with PCA + VAR (Dynamic Factor Model)
 # ================================
