@@ -21,8 +21,8 @@ kfilepath_metadata <- "C:/Users/kfree/OneDrive/Desktop/MASTER 3/MACRO FORECAST/D
 nfilepath_data <- "~/Documents/school/methods-for-macro-forecasting-2025/submission/data/data_quarterly.csv"
 nfilepath_metadata <- "~/Documents/school/methods-for-macro-forecasting-2025/submission/data/metadata_quarterly_en.csv"
 # Adjust depending on environment
-df <- utils::read.csv(nfilepath_data)
-metadata <- utils::read.csv(nfilepath_metadata)
+df <- utils::read.csv(kfilepath_data)
+metadata <- utils::read.csv(kfilepath_metadata)
 cutoff_pre_covid <- as.Date("2018-12-31")
 # ================================
 # 2. Data Preparation
@@ -1027,7 +1027,7 @@ p <- ggplot() +
     ncol   = 1,
     labeller = as_labeller(facet_labels)   # <-- NUOVO: titoli pannelli
   ) +
-# legenda 
+  # legenda 
   scale_color_manual(
     values = pal_colors,
     breaks = c("Our", "KOF"),
@@ -1052,757 +1052,762 @@ p <- ggplot() +
 
 print(p)
 
+# ================================
+# 6. Forecasting with FVAR (Factor-Augmented VAR)
+# ================================
 
-# ============================================
-#   9. STATE SPACE: Dynamic Factor Model Initialization (PCA/SVD → F0, Lambda0, R0, A0, Q0)
-# Compatible with KFAS: x_t = Λ f_t + e_t ; f_t = A f_{t-1} + u_t
-# ============================================
-# 
-# 
-# # ============================================
-# # STATE SPACE: Dynamic Factor Model Initialization (PCA/SVD → F0, Lambda0, R0, A0, Q0)
-# # Compatible with KFAS: x_t = Λ f_t + e_t ; f_t = A f_{t-1} + u_t
-# # ============================================
-# #In our workflow, we currently have roughly these main parts:
-# 
-# # Data loading + cleaning
-# 
-# # Transformations (logdiff, diff, etc.)
-# 
-# # Standardization (df_train_std, vars_X, vars_Y)
-# 
-# # Number of factors selection (Bai–Ng, ICp3) → gives r_fixed
-# 
-# # now we switch to STATE SPACE MODEL
-# 
-# 
-# 
-# dfm_init <- function(df_train_std, vars_X, r_fixed, ar_cap = 0.98) {
-#   stopifnot("date" %in% names(df_train_std))
-#   X_std <- as.matrix(df_train_std[, vars_X, drop = FALSE])
-#   Tn <- nrow(X_std); Nn <- ncol(X_std)
-#   if (Tn < 5 || Nn < 1) stop("X_std has insufficient dimensions.")
-#   
-#   # --- 1) Prepare matrix for SVD: replace NA with 0 (mean=0 after standardization) ---
-#   X_svd <- X_std
-#   X_svd[!is.finite(X_svd)] <- 0
-#   
-#   # --- 2) SVD on standardized X (already zero mean) ---
-#   #     Decomposition: X ≈ U D V'
-#   #     Factors and loadings (Stock–Watson convention):
-#   #     F0 = sqrt(T) * U_r         ;  Lambda0 = V_r * (D_r / sqrt(T))
-#   sv <- svd(X_svd)  # X_svd = U D V'
-#   r <- max(1, min(r_fixed, length(sv$d), Nn, floor(0.5 * min(Tn, Nn))))
-#   
-#   U_r <- sv$u[, 1:r, drop = FALSE]
-#   D_r <- sv$d[1:r]
-#   V_r <- sv$v[, 1:r, drop = FALSE]
-#   
-#   F0       <- sqrt(Tn) * U_r                            # T x r
-#   Lambda0  <- V_r %*% diag(D_r / sqrt(Tn), nrow = r)    # N x r
-#   
-#   # --- 3) Idiosyncratic variances (R0, diagonal) from residuals X - F0 %*% t(Lambda0) ---
-#   E0 <- X_svd - F0 %*% t(Lambda0)
-#   R_diag <- colMeans(E0^2)  # N x 1
-#   R_diag[!is.finite(R_diag)] <- 1e-4
-#   R_diag <- pmax(R_diag, 1e-4)
-#   R0 <- diag(R_diag, nrow = Nn)
-#   
-#   # --- 4) Factor dynamics: independent AR(1) for each factor ---
-#   phi <- rep(NA_real_, r)
-#   sig_u <- rep(NA_real_, r)
-#   for (j in seq_len(r)) {
-#     y  <- F0[-1, j]
-#     x  <- F0[-Tn, j]
-#     # OLS without intercept: f_t = phi * f_{t-1} + u_t
-#     phi_j <- sum(x * y) / sum(x * x)
-#     if (!is.finite(phi_j)) phi_j <- 0
-#     phi_j <- max(-ar_cap, min(ar_cap, phi_j))  # stability cap
-#     u_j   <- y - phi_j * x
-#     s2_j  <- mean(u_j^2)
-#     if (!is.finite(s2_j) || s2_j <= 0) s2_j <- 1e-4
-#     phi[j]  <- phi_j
-#     sig_u[j] <- s2_j
-#   }
-#   A0 <- diag(phi, nrow = r)                 # r x r transition matrix
-#   Q0 <- diag(pmax(sig_u, 1e-4), nrow = r)   # r x r state noise covariance
-#   
-#   # --- 5) Build the state-space model for KFAS ---
-#   # Measurement eq: x_t = Λ f_t + ε_t,  ε_t ~ N(0, R0)
-#   # Transition eq:  f_t = A f_{t-1} + u_t,  u_t ~ N(0, Q0)
-#   Zt <- array(0, dim = c(Nn, r, 1)); Zt[, , 1] <- Lambda0
-#   Tt <- array(A0, dim = c(r, r, 1))
-#   Rt <- diag(r)
-#   
-#   model <- SSModel(
-#     X_std ~ -1 + SSMcustom(
-#       Z = Zt, T = Tt, R = Rt,
-#       Q = Q0, a1 = rep(0, r), P1 = diag(10, r),
-#       state_names = paste0("F", 1:r)
-#     ),
-#     H = R0
-#   )
-#   
-#   list(
-#     X_std   = X_std,          # standardized data used in measurement equation
-#     r       = r,
-#     F0      = F0,             # initial factors (T x r)
-#     Lambda0 = Lambda0,        # initial loadings (N x r)
-#     R0      = R0,             # idiosyncratic variance matrix
-#     A0      = A0,             # AR(1) transition matrix
-#     Q0      = Q0,             # factor innovation variance
-#     model   = model           # SSModel ready for EM / Kalman
-#   )
-# }
-# 
-# # ====== USAGE EXAMPLE ======
-# # Assuming df_train_std, vars_X, r_fixed already exist:
-# init <- dfm_init(df_train_std, vars_X, r_fixed = r_fixed)
-# 
-# # Optionally: first smoothing pass with initial parameters
-# ks0 <- KFS(init$model, smoothing = c("state", "mean"))
-# F_smooth0 <- ks0$alphahat            # T x r smoothed factors
-# X_fitted0 <- signal(init$model)$signal  # fitted measurements
-# 
-# # Optional: run EM to optimize H and Q (and optionally Z, T if parameterized)
-# # fit <- fitSSM(init$model,
-# #               inits = c(log(diag(init$model$H)), log(diag(init$model$Q))),
-# #               method = "BFGS")
-# # mod_hat <- fit$model
-# # ks_hat  <- KFS(mod_hat, smoothing = c("state", "mean"))
-# 
-# # ============================================================
-# # ML estimation (quasi-ML) of H (idiosyncratic), Q (factor shocks), A (AR(1))
-# # Λ (loadings) kept fixed to PCA for identification.
-# # ============================================================
-# 
-# library(KFAS)
-# 
-# ssm0   <- init$model
-# Nn     <- nrow(ssm0$y)             # number of series (N)
-# r      <- dim(ssm0$Z)[2]           # number of factors (r)
-# phi_cap <- 0.98                     # stability cap for AR(1)
-# 
-# # --- Parameterization & constraints ---
-# # par = [ log(diag(H))_(N) , log(diag(Q))_(r) , atanh(phi/phi_cap)_(r) ]
-# par0 <- c(
-#   log(diag(ssm0$H)),                        # H diagonal (positive)
-#   log(diag(ssm0$Q)),                        # Q diagonal (positive)
-#   atanh(diag(ssm0$T[,,1]) / phi_cap)        # AR(1) φ_j ∈ (-phi_cap, phi_cap)
-# )
-# 
-# # Map parameter vector -> model (H, Q, A updated; Λ fixed)
-# updatefn <- function(par, model) {
-#   idxH <- 1:Nn
-#   idxQ <- (Nn + 1):(Nn + r)
-#   idxA <- (Nn + r + 1):(Nn + 2*r)
-#   
-#   Hdiag <- exp(par[idxH])                    # ensure > 0
-#   Qdiag <- exp(par[idxQ])                    # ensure > 0
-#   phi   <- phi_cap * tanh(par[idxA])         # ensure |phi| < phi_cap
-#   
-#   model$H[,]     <- diag(Hdiag, nrow = Nn)
-#   model$Q[,]     <- diag(Qdiag, nrow = r)
-#   model$T[,,1]   <- diag(phi, nrow = r)      # AR(1) diagonal transition
-#   # Z (loadings) and R (identity) are kept as-in (from PCA init)
-#   model
-# }
-# 
-# # --- Fit by BFGS (quasi-ML) ---
-# fit <- fitSSM(
-#   inits    = par0,
-#   model    = ssm0,
-#   updatefn = updatefn,
-#   method   = "BFGS",
-#   control  = list(maxit = 300, reltol = 1e-8)
-# )
-# 
-# mod_hat <- fit$model
-# 
-# # --- Smoothing with estimated parameters ---
-# ks_hat <- KFS(mod_hat, smoothing = c("state", "mean"))
-# F_smooth <- ks_hat$alphahat               # T x r smoothed factors
-# X_fitted <- signal(mod_hat)$signal        # T x N fitted measurements (in standardized units)
-# 
-# # --- Basic diagnostics ---
-# ll    <- as.numeric(logLik(mod_hat))
-# k_par <- length(par0)
-# n_obs <- sum(is.finite(mod_hat$y))        # total observed measurements
-# AIC   <- -2*ll + 2*k_par
-# BIC   <- -2*ll + k_par*log(n_obs)
-# 
-# cat(sprintf("\n=== Quasi-ML fit ===\nlogLik = %.2f | AIC = %.2f | BIC = %.2f | k = %d | n = %d\n",
-#             ll, AIC, BIC, k_par, n_obs))
-# 
-# # Standardized recursive residuals (one-step-ahead)
-# res_std <- residuals(mod_hat, type = "recursive", standardized = TRUE)
-# # You can inspect series-wise residual distribution / autocorrelation as needed.
-# 
-# # --- Extract estimated components (useful for reporting) ---
-# H_hat   <- mod_hat$H[,]                   # diagonal idiosyncratic variances (N x N)
-# Q_hat   <- mod_hat$Q[,]                   # diagonal factor shock variances (r x r)
-# A_hat   <- mod_hat$T[,,1]                 # AR(1) coefficients (r x r, diagonal)
-# Lambda  <- mod_hat$Z[,,1]                 # loadings (N x r) — fixed from PCA init
-# 
-# # (Optional) Reconstruct idiosyncratic residuals in standardized units:
-# # E_hat = y - Λ * f |t (use smoothed states for f)
-# Y_std_hat <- t(Lambda %*% t(F_smooth))    # T x N
-# E_hat <- mod_hat$y - t(Y_std_hat)         # N x T in KFAS, so transpose back if needed
-# # NOTE: KFAS stores y as N x T; signal() returns T x N; be mindful of dims if you use these.
-# 
-# # ============================================================
-# # Forecasting h steps ahead (in transformed/standardized units)
-# # ============================================================
-# 
-# h_steps <- 4L
-# 
-# # Extend the model with h rows of NA to obtain prediction for the measurements
-# mod_fc <- mod_hat
-# Y_obs  <- mod_fc$y                         # N x T
-# Y_aug  <- cbind(Y_obs, matrix(NA_real_, nrow = Nn, ncol = h_steps))
-# mod_fc$y <- Y_aug
-# 
-# # Filter forward to get one-step-ahead predictions
-# kf_fc <- KFS(mod_fc, filtering = "state", smoothing = "none")
-# 
-# # Predicted signals (measurement means) for the whole augmented sample:
-# sig_aug <- signal(mod_fc)$signal           # (T + h) x N  in standardized units
-# 
-# # Grab only the last h rows (forecasts)
-# pred_transformed <- sig_aug[(nrow(sig_aug) - h_steps + 1):nrow(sig_aug), , drop = FALSE]
-# colnames(pred_transformed) <- colnames(init$X_std)  # same measurement names (vars_X order)
-# 
-# # ============================================================
-# # Map forecasts to your target variables and back-transform to levels (optional)
-# # ============================================================
-# # pred_transformed is in the *measurement space* (standardized transformed units).
-# # If your targets vars_Y are among the measurement variables, subset and de-standardize using
-# # the moments you use in your pipeline (mean/sd from the training window you prefer).
-# # Otherwise, build a Y from the factors via a separate mapping (like your OLS step).
-# 
-# # Example: if vars_Y ⊆ colnames(pred_transformed) and you want to de-standardize with
-# # full-history moments (Y_mean, Y_sd) as you already do for nowcasts:
-# 
-# pred_Y_tr <- pred_transformed[, vars_Y, drop = FALSE]  # transformed (Δlog*100 or diff), std units
-# # De-standardize back to transformed units:
-# # (Assumes you have Y_mean and Y_sd consistent with how you standardized Y in your pipeline.)
-# pred_Y_transformed <- sweep(pred_Y_tr, 2, Y_sd, `*`)
-# pred_Y_transformed <- sweep(pred_Y_transformed, 2, Y_mean, `+`)
-# 
-# # If you want back to *levels*, reuse your back-transform logic per variable:
-# #   - logdiff:  Level_{t+h} = Base_{t+h-1} * exp( y_{t+h} / 100 )
-# #   - diff:     Level_{t+h} = Base_{t+h-1} + y_{t+h}
-# # where Base depends on the horizon (for h=1 use L_t, for h=4 use L_{t+3}).
-# # You already implemented this in your PCA+VAR part; plug the same helper here.
-# 
-# # (Optional) Assemble a tidy forecast table
-# fc_dates <- seq(from = max(df_train_std$date), by = "quarter", length.out = h_steps)
-# now_table_transformed_ssm <- data.frame(
-#   date = fc_dates,
-#   pred_Y_transformed,
-#   row.names = NULL,
-#   check.names = FALSE
-# )
-# 
-# print(head(now_table_transformed_ssm, 4))
+# Usiamo stessi target, stesse origini e stesso h_long
+nY    <- length(vars_Y)
+nOrg  <- length(oos_origin_idx)
+h_long <- 4
+p_fix  <- 2  # stesso p del VAR sui fattori
 
-# ============================================================================
-# Enhanced State-Space Dynamic Factor Model Implementation
-# Following analyst's detailed specification for KFAS implementation
-# ============================================================================
+# Matrici per previsioni FVAR
+pred_h1_real_fvar <- pred_h4_real_fvar <-
+  matrix(NA, nrow = nOrg, ncol = nY, dimnames = list(NULL, vars_Y))
 
-cat("\n=== Enhanced State-Space Dynamic Factor Model (KFAS) ===\n")
+pred_h1_std_fvar_mat <- pred_h4_std_fvar_mat <-
+  matrix(NA, nrow = nOrg, ncol = nY, dimnames = list(NULL, vars_Y))
 
-# ============================================================================
-# Data Preparation for State-Space Model
-# Use all series (targets + predictors) for factor extraction
-# ============================================================================
+cat("\n=== Expanding-window forecasting: FVAR ===\n")
 
-# Create the full measurement matrix Y_mat (T x m) including both targets and predictors
-Y_cols <- c(vars_Y, vars_X)  # targets first, then predictors
-Y_mat <- as.matrix(df_train_std[, Y_cols, drop = FALSE])
-m <- ncol(Y_mat)  # number of series
-r <- r_fixed      # number of factors from Bai-Ng selection
-
-cat(sprintf("Building state-space model with m=%d series and r=%d factors\n", m, r))
-
-# ============================================================================
-# State-Space Model Construction with KFAS
-# Observation equation: y_t = Λ f_t + ε_t
-# State equation: f_t = Φ f_{t-1} + u_t
-# ============================================================================
-
-# Initialize system matrices with appropriate dimensions
-Zt <- matrix(NA, m, r)          # loading matrix (m x r) with NAs for estimation
-Tt <- matrix(NA, nrow = r, ncol = r) # AR(2) factor transition (r x r) with NAs on diagonal
-Rt <- diag(1, r)                # identity matrix (r x r)
-Qt <- diag(1, r)                # identity matrix (r x r) - fixed for identification
-Ht <- diag(NA, m)               # diagonal observation covariance (m x m) with NAs
-
-# Initial state setup for diffuse initialization
-a1 <- rep(0, r)                 # initial state means
-P1 <- matrix(0, r, r)           # diffuse part (will use P1inf for actual diffuse)
-P1inf <- diag(1, r)             # diffuse initial covariance flags
-
-# Build the SSModel object
-model_ss <- SSModel(
-  Y_mat ~ -1 + SSMcustom(
-    Z = Zt, 
-    T = Tt, 
-    R = Rt, 
-    Q = Qt,
-    a1 = a1, 
-    P1 = P1, 
-    P1inf = P1inf,
-    state_names = paste0("Factor", 1:r),
-    index = 1:m
-  ),
-  H = Ht
-)
-
-cat("State-space model structure created\n")
-
-# ============================================================================
-# Parameter Estimation Setup
-# Parameters to estimate: loadings (Λ), observation variances (H), AR coefficients (φ)
-# ============================================================================
-
-# Define parameter vector lengths
-nZ   <- m * r            # number of loadings
-nH   <- m                # number of unique H variances (diagonal)
-nPhi <- r                # number of AR coefficients
-
-# Update function to map parameter vector to model matrices
-updatefn_ss <- function(par, model) {
-  stopifnot(length(par) == nZ + nH + nPhi)
+k <- 0
+for (tcut in oos_origin_idx) {
+  k <- k + 1
+  cat("FVAR Origin", k, "/", nOrg, "— fino a", as.character(df_train_std$date[tcut]), "\n")
   
-  # 1. Factor loadings (Z matrix) - fill by row-major order
-  model$Z[,,1] <- matrix(par[1:nZ], nrow = m, ncol = r)
+  # Dati fino all'origine tcut
+  X_train <- as.matrix(df_train_std[1:tcut, vars_X, drop = FALSE])
+  Y_train <- as.matrix(df_train_std[1:tcut, vars_Y, drop = FALSE])
   
-  # 2. Observation variances (H matrix diagonal) - exponential transformation
-  h_vals <- exp(par[(nZ+1):(nZ+nH)])
-  model$H[,,1] <- diag(h_vals, m)
+  # Standardizzazione X
+  X_mean <- colMeans(X_train, na.rm = TRUE)
+  X_sd   <- apply(X_train, 2, sd, na.rm = TRUE); X_sd[X_sd == 0] <- 1
+  X_std  <- scale(X_train, center = X_mean, scale = X_sd)
+  # Imputazione NA in X_std con media (0 in scala standardizzata)
+  for (j in seq_len(ncol(X_std))) {
+    m <- mean(X_std[, j], na.rm = TRUE); if (!is.finite(m)) m <- 0
+    X_std[is.na(X_std[, j]), j] <- m
+  }
   
-  # 3. AR(1) coefficients (T matrix diagonal) - tanh transformation for stationarity
-  phi_pars <- par[(nZ+nH+1):(nZ+nH+nPhi)]
-  phi_vals <- tanh(phi_pars)  # maps to (-1, 1)
-  model$T[,,1] <- diag(phi_vals, r)
+  # Standardizzazione Y
+  Y_mean <- colMeans(Y_train, na.rm = TRUE)
+  Y_sd   <- apply(Y_train, 2, sd, na.rm = TRUE); Y_sd[Y_sd == 0] <- 1
+  Y_std  <- scale(Y_train, center = Y_mean, scale = Y_sd)
   
-  return(model)
+  # PCA sui regressori X_std (stesso r_fixed scelto prima con Bai–Ng)
+  pca_fit <- prcomp(X_std, center = FALSE, scale. = FALSE)
+  F_train <- pca_fit$x[, 1:r_fixed, drop = FALSE]
+  colnames(F_train) <- paste0("F", seq_len(r_fixed))
+  
+  # Costruiamo il dataset per la VAR: Z_t = [Y_t, F_t]
+  Z_train <- cbind(Y_std, F_train)
+  Z_df    <- as.data.frame(Z_train)
+  
+  # FVAR: VAR sui target + fattori
+  var_fvar <- VAR(Z_df, p = p_fix, type = "const")
+  fc_fvar  <- predict(var_fvar, n.ahead = h_long)
+  
+  # Previsioni di Y (in scala standardizzata) a h=1 e h=4
+  pred_h1_std <- sapply(vars_Y, function(nm) fc_fvar$fcst[[nm]][1, "fcst"])
+  pred_h4_std <- sapply(vars_Y, function(nm) fc_fvar$fcst[[nm]][h_long, "fcst"])
+  
+  # Salvataggio standardizzato
+  pred_h1_std_fvar_mat[k, ] <- pred_h1_std
+  pred_h4_std_fvar_mat[k, ] <- pred_h4_std
+  
+  # De-standardizzazione (torno alla scala "trasformata" come df_train_clean)
+  pred_h1_real_fvar[k, ] <- pred_h1_std * Y_sd + Y_mean
+  pred_h4_real_fvar[k, ] <- pred_h4_std * Y_sd + Y_mean
 }
 
-# ============================================================================
-# Initialize parameters using PCA results
-# ============================================================================
+cat("\n=== FVAR forecast loop completed ===\n")
 
-cat("Initializing parameters using PCA...\n")
+# ================================
+# 6.1. FVAR – OOS metrics in transformed units
+# ================================
 
-# Use PCA for initial loading estimates
-Y_pca <- Y_mat
-Y_pca[!is.finite(Y_pca)] <- 0  # replace NAs with 0 for PCA
+rmse_h1_tr_fvar <- sapply(seq_len(ncol(real_h1_real)), function(j) rmse(real_h1_real[, j] - pred_h1_real_fvar[, j]))
+rmse_h4_tr_fvar <- sapply(seq_len(ncol(real_h4_real)), function(j) rmse(real_h4_real[, j] - pred_h4_real_fvar[, j]))
+mae_h1_tr_fvar  <- sapply(seq_len(ncol(real_h1_real)), function(j) mae(real_h1_real[, j] - pred_h1_real_fvar[, j]))
+mae_h4_tr_fvar  <- sapply(seq_len(ncol(real_h4_real)), function(j) mae(real_h4_real[, j] - pred_h4_real_fvar[, j]))
 
-pca_result <- prcomp(Y_pca, center = FALSE, scale. = FALSE)  # already standardized
-init_loadings_pca <- pca_result$rotation[, 1:r, drop = FALSE]  # m x r
-
-# Scale loadings to match our Q=I convention
-eigenvals <- pca_result$sdev[1:r]^2
-init_loadings_scaled <- init_loadings_pca %*% diag(sqrt(eigenvals), r)
-
-# Initial parameter vector
-init_loadings <- as.vector(init_loadings_scaled)  # vectorize by row-major order
-init_H <- rep(log(0.5), nH)                      # log-variance initial guess
-init_phi <- rep(0, nPhi)                         # start with no persistence
-
-init_params <- c(init_loadings, init_H, init_phi)
-
-cat(sprintf("Parameter vector length: %d (loadings: %d, H: %d, phi: %d)\n", 
-            length(init_params), nZ, nH, nPhi))
-
-# ============================================================================
-# Maximum Likelihood Estimation
-# ============================================================================
-
-cat("Starting maximum likelihood estimation...\n")
-
-# Fit the model using BFGS optimization
-fit_ss <- fitSSM(
-  model = model_ss, 
-  inits = init_params, 
-  updatefn = updatefn_ss, 
-  method = "BFGS",
-  control = list(maxit = 500, reltol = 1e-6, trace = 1)
+metrics_transformed_fvar <- data.frame(
+  variable = colnames(real_h1_real),
+  RMSE_h1  = rmse_h1_tr_fvar,
+  RMSE_h4  = rmse_h4_tr_fvar,
+  MAE_h1   = mae_h1_tr_fvar,
+  MAE_h4   = mae_h4_tr_fvar,
+  row.names = NULL
 )
 
-# Check convergence
-if (fit_ss$optim.out$convergence != 0) {
-  cat("Warning: Optimization did not converge properly. Code:", fit_ss$optim.out$convergence, "\n")
-} else {
-  cat("Optimization converged successfully\n")
-}
+cat("\n=== FVAR – Forecast Evaluation (Transformed Units) ===\n")
+print(metrics_transformed_fvar)
 
-model_fit_ss <- fit_ss$model
-logLik_val_ss <- logLik(model_fit_ss)
+# ================================
+# 6.2. FVAR – Back-transform to levels
+# ================================
 
-cat(sprintf("Final log-likelihood: %.2f\n", as.numeric(logLik_val_ss)))
+# Pre-allocation di liste
+pred_h1_level_fvar <- setNames(vector("list", length(vars_Y)), vars_Y)
+pred_h4_level_fvar <- setNames(vector("list", length(vars_Y)), vars_Y)
+real_h1_level_fvar <- setNames(vector("list", length(vars_Y)), vars_Y)
+real_h4_level_fvar <- setNames(vector("list", length(vars_Y)), vars_Y)
 
-# Extract estimated parameters
-Lambda_hat <- model_fit_ss$Z[,,1]     # estimated loadings (m x r)
-H_hat_ss <- model_fit_ss$H[,,1]       # estimated observation variances (m x m)
-phi_hat <- diag(model_fit_ss$T[,,1])  # estimated AR coefficients (r x 1)
-
-cat("Estimated AR(1) coefficients for factors:\n")
-print(round(phi_hat, 3))
-
-# ============================================================================
-# Kalman Filtering and Smoothing
-# ============================================================================
-
-cat("Running Kalman filter and smoother...\n")
-
-# Run Kalman filter and smoother
-kfs_result <- KFS(model_fit_ss, smoothing = c("state", "mean"))
-
-# Extract smoothed factors and fitted values
-factors_smooth <- kfs_result$alphahat     # smoothed factors (T x r)
-Y_fitted_ss <- fitted(model_fit_ss)       # fitted observations (T x m)
-
-cat(sprintf("Extracted %d factors over %d time periods\n", ncol(factors_smooth), nrow(factors_smooth)))
-
-# ============================================================================
-# Forecasting with State-Space Model
-# Generate nowcast (h=1) and 4-quarters ahead (h=4) forecasts
-# ============================================================================
-
-cat("Generating forecasts...\n")
-
-# For KFAS, we need to extend the data matrix with NAs and use KFS for forecasting
-h_forecast <- 4
-T_obs <- nrow(Y_mat)
-
-# Create extended data matrix with NAs for forecast periods
-Y_extended <- rbind(Y_mat, matrix(NA, nrow = h_forecast, ncol = m))
-
-# Create extended model
-model_extended <- SSModel(
-  Y_extended ~ -1 + SSMcustom(
-    Z = model_fit_ss$Z, 
-    T = model_fit_ss$T, 
-    R = model_fit_ss$R, 
-    Q = model_fit_ss$Q,
-    a1 = model_fit_ss$a1, 
-    P1 = model_fit_ss$P1, 
-    P1inf = model_fit_ss$P1inf,
-    state_names = paste0("Factor", 1:r),
-    index = 1:m
-  ),
-  H = model_fit_ss$H
-)
-
-# Run Kalman filter on extended model to get forecasts
-kfs_forecast <- KFS(model_extended, filtering = "state", smoothing = "none")
-
-# Extract forecasts from the filtered estimates
-# The forecasts are the fitted values for the NA periods
-Y_forecast <- fitted(model_extended)[(T_obs + 1):(T_obs + h_forecast), , drop = FALSE]
-
-# Extract forecasts for target variables
-target_idx_ss <- match(vars_Y, colnames(Y_mat))
-
-# Extract specific horizons
-fc_h1_ss <- Y_forecast[1, target_idx_ss]  # nowcast (h=1)
-fc_h4_ss <- Y_forecast[4, target_idx_ss]  # 4-quarters ahead (h=4)
-
-# Create forecast results table (transformed units)
-nowcast_results_ss <- data.frame(
-  variable = vars_Y,
-  last_obs_date = max(df_train_clean$date),
-  nowcast_h1_date = seq(max(df_train_clean$date), by = "quarter", length.out = 2)[2],
-  forecast_h1_tr = as.numeric(fc_h1_ss),
-  forecast_h4_date = seq(max(df_train_clean$date), by = "quarter", length.out = 5)[5],
-  forecast_h4_tr = as.numeric(fc_h4_ss)
-)
-
-cat("\n=== State-Space Model Forecasts (Transformed Units) ===\n")
-print(nowcast_results_ss)
-
-# ============================================================================
-# Back-transformation to Levels (Optional)
-# Convert forecasts from transformed units back to original levels
-# ============================================================================
-
-cat("\nBack-transforming forecasts to levels...\n")
-
-# Get last observed values in original levels
-last_levels_ss <- df_train[df_train$date == max(df_train_clean$date), vars_Y]
-L_t_ss <- as.numeric(last_levels_ss)
-names(L_t_ss) <- vars_Y
-
-# Get transformation types from metadata
-transform_type_ss <- setNames(metadata$transform[match(vars_Y, metadata$ts_key)], vars_Y)
-
-# Back-transform forecasts
-L_h1_ss <- numeric(length(vars_Y))
-L_h4_ss <- numeric(length(vars_Y))
-
-for (j in seq_along(vars_Y)) {
-  v <- vars_Y[j]
-  tr <- tolower(transform_type_ss[j])
-  fh1 <- fc_h1_ss[j]  # h=1 forecast in transformed scale
-  fh4 <- fc_h4_ss[j]  # h=4 forecast in transformed scale
+for (v in vars_Y) {
+  tr_v   <- get_transform(v)
+  # stessi "base" usati per il DFM
+  base_h1 <- levels_df[[v]][oos_origin_idx]
+  base_h4 <- levels_df[[v]][oos_origin_idx + (h_long - 1)]
+  L_t1    <- levels_df[[v]][oos_origin_idx + 1]
+  L_t4    <- levels_df[[v]][oos_origin_idx + h_long]
   
-  if (tr == "logdiff") {
-    # For log-difference transformation: Level = last_level * exp(forecast/100)
-    L_h1_ss[j] <- L_t_ss[v] * exp(fh1 / 100)
-    L_h4_ss[j] <- L_t_ss[v] * exp(fh4 / 100)
-  } else if (tr == "diff") {
-    # For simple difference: Level = last_level + forecast
-    L_h1_ss[j] <- L_t_ss[v] + fh1
-    L_h4_ss[j] <- L_t_ss[v] + fh4
+  # previsioni FVAR in scala trasformata
+  yhat_h1 <- pred_h1_real_fvar[, v]
+  yhat_h4 <- pred_h4_real_fvar[, v]
+  
+  if (v %in% growth_vars) {
+    # PIL in Δlog×100 (QoQ %), come prima
+    pred_h1_level_fvar[[v]] <- yhat_h1
+    pred_h4_level_fvar[[v]] <- yhat_h4
+    real_h1_level_fvar[[v]] <- real_h1_real[, v]
+    real_h4_level_fvar[[v]] <- real_h4_real[, v]
+  } else if (tr_v == "logdiff") {
+    pred_h1_level_fvar[[v]] <- base_h1 * exp(yhat_h1 / 100)
+    pred_h4_level_fvar[[v]] <- base_h4 * exp(yhat_h4 / 100)
+    real_h1_level_fvar[[v]] <- L_t1
+    real_h4_level_fvar[[v]] <- L_t4
+  } else if (tr_v == "diff") {
+    pred_h1_level_fvar[[v]] <- base_h1 + yhat_h1
+    pred_h4_level_fvar[[v]] <- base_h4 + yhat_h4
+    real_h1_level_fvar[[v]] <- L_t1
+    real_h4_level_fvar[[v]] <- L_t4
   } else {
-    # No transformation case
-    L_h1_ss[j] <- fh1
-    L_h4_ss[j] <- fh4
+    pred_h1_level_fvar[[v]] <- yhat_h1
+    pred_h4_level_fvar[[v]] <- yhat_h4
+    real_h1_level_fvar[[v]] <- L_t1
+    real_h4_level_fvar[[v]] <- L_t4
   }
 }
 
-# Create back-transformed results table
-backtransformed_results_ss <- data.frame(
+pred_h1_level_fvar <- as.data.frame(pred_h1_level_fvar, check.names = FALSE)
+pred_h4_level_fvar <- as.data.frame(pred_h4_level_fvar, check.names = FALSE)
+real_h1_level_fvar <- as.data.frame(real_h1_level_fvar, check.names = FALSE)
+real_h4_level_fvar <- as.data.frame(real_h4_level_fvar, check.names = FALSE)
+
+# Metriche FVAR in livelli
+rmse_h1_lvl_fvar <- sapply(vars_Y, function(v) rmse(real_h1_level_fvar[[v]] - pred_h1_level_fvar[[v]]))
+rmse_h4_lvl_fvar <- sapply(vars_Y, function(v) rmse(real_h4_level_fvar[[v]] - pred_h4_level_fvar[[v]]))
+mae_h1_lvl_fvar  <- sapply(vars_Y, function(v) mae(real_h1_level_fvar[[v]] - pred_h1_level_fvar[[v]]))
+mae_h4_lvl_fvar  <- sapply(vars_Y, function(v) mae(real_h4_level_fvar[[v]] - pred_h4_level_fvar[[v]]))
+
+metrics_levels_fvar <- data.frame(
   variable = vars_Y,
-  nowcast_h1_date = nowcast_results_ss$nowcast_h1_date,
-  forecast_h1_level = L_h1_ss,
-  forecast_h4_date = nowcast_results_ss$forecast_h4_date,
-  forecast_h4_level = L_h4_ss
+  RMSE_h1  = as.numeric(rmse_h1_lvl_fvar),
+  RMSE_h4  = as.numeric(rmse_h4_lvl_fvar),
+  MAE_h1   = as.numeric(mae_h1_lvl_fvar),
+  MAE_h4   = as.numeric(mae_h4_lvl_fvar),
+  row.names = NULL
 )
 
-cat("\n=== State-Space Model Forecasts (Level Units) ===\n")
-print(backtransformed_results_ss)
+cat("\n=== FVAR – Forecast Evaluation (Levels) ===\n")
+print(metrics_levels_fvar)
 
-# ============================================================================
-# Model Diagnostics and Summary
-# ============================================================================
+# =========================
+# 7.FVAR – NOW forecast (h=1..4) with Factor-Augmented VAR
+# =========================
 
-cat("\n=== State-Space Model Diagnostics ===\n")
+# Safety: oggetti che devono esistere dalla sezione NOW DFM
+req_now_objs <- c("df_train_clean","vars_Y","vars_X","growth_vars","metadata","df")
+miss_now <- req_now_objs[!vapply(req_now_objs, exists, logical(1))]
+if (length(miss_now)) {
+  stop("Missing objects for FVAR NOW: ", paste(miss_now, collapse = ", "))
+}
 
-# Calculate information criteria
-k_params_ss <- nZ + nH + nPhi
-n_obs_ss <- sum(is.finite(model_fit_ss$y))
-AIC_ss <- -2 * as.numeric(logLik_val_ss) + 2 * k_params_ss
-BIC_ss <- -2 * as.numeric(logLik_val_ss) + k_params_ss * log(n_obs_ss)
+# Ricostruiamo df_now, X_all, Y_all come nella NOW DFM
+X_now_names <- vars_X
 
-cat(sprintf("Log-likelihood: %.2f\n", as.numeric(logLik_val_ss)))
-cat(sprintf("AIC: %.2f\n", AIC_ss))
-cat(sprintf("BIC: %.2f\n", BIC_ss))
-cat(sprintf("Number of parameters: %d\n", k_params_ss))
-cat(sprintf("Number of observations: %d\n", n_obs_ss))
+needed_cols <- c("date", vars_Y, X_now_names)
+needed_cols <- intersect(needed_cols, names(df_train_clean))
+df_now <- df_train_clean[, needed_cols, drop = FALSE]
+df_now <- df_now[order(df_now$date), , drop = FALSE]
+row.names(df_now) <- NULL
 
-# Residual diagnostics
-# residuals_ss <- residuals(model_fit_ss, type = "recursive", standardized = TRUE)
-# residual_mean <- apply(residuals_ss, 2, function(x) mean(x, na.rm = TRUE))
-# residual_sd <- apply(residuals_ss, 2, function(x) sd(x, na.rm = TRUE))
-# 
-# cat(sprintf("\nResidual diagnostics - Mean absolute residual: %.4f\n", 
-#             mean(abs(residual_mean), na.rm = TRUE)))
-# cat(sprintf("Residual diagnostics - Average std deviation: %.4f\n", 
-#             mean(residual_sd, na.rm = TRUE)))
-# 
-# # Factor loadings summary for target variables
-# cat("\n=== Factor Loadings for Target Variables ===\n")
-# loadings_targets <- Lambda_hat[target_idx_ss, , drop = FALSE]
-# rownames(loadings_targets) <- vars_Y
-# colnames(loadings_targets) <- paste0("Factor", 1:r)
-# print(round(loadings_targets, 3))
+X_all <- as.matrix(df_now[, X_now_names, drop = FALSE])
+Y_all <- as.matrix(df_now[, vars_Y,      drop = FALSE])
 
-# ============================================================================
-# Comparison Summary
-# Create summary for comparison with other methods
-# ============================================================================
+# Standardizziamo X e Y (full history)
+X_mean <- apply(X_all, 2, mean, na.rm = TRUE)
+X_sd   <- apply(X_all, 2, sd,   na.rm = TRUE); X_sd[X_sd == 0] <- 1
+X_std  <- scale(X_all, center = X_mean, scale = X_sd)
 
-# Store state-space results for potential plotting/comparison
-ssm_forecast_summary <- data.frame(
-  variable = rep(vars_Y, 2),
-  date = c(rep(nowcast_results_ss$nowcast_h1_date[1], length(vars_Y)),
-           rep(nowcast_results_ss$forecast_h4_date[1], length(vars_Y))),
-  value = c(L_h1_ss, L_h4_ss),
-  horizon = rep(c("h1", "h4"), each = length(vars_Y)),
-  source = "StateSpaceDFM"
+Y_mean <- apply(Y_all, 2, mean, na.rm = TRUE)
+Y_sd   <- apply(Y_all, 2, sd,   na.rm = TRUE); Y_sd[Y_sd == 0] <- 1
+Y_std  <- scale(Y_all, center = Y_mean, scale = Y_sd)
+
+# Imputazione NA in X standardizzato (0 = media)
+X_std_imp <- X_std
+for (j in seq_len(ncol(X_std_imp))) {
+  X_std_imp[is.na(X_std_imp[, j]), j] <- 0
+}
+
+# Numero di fattori: riusiamo r_fixed se esiste
+if (exists("r_fixed")) {
+  r_now_fvar <- r_fixed
+} else {
+  # fallback (non dovrebbe servire nel tuo setup)
+  r_now_fvar <- min(5L, ncol(X_std_imp))
+}
+message("FVAR NOW: using r = ", r_now_fvar)
+
+# PCA per NOW su tutto il campione
+pca_now_fvar <- prcomp(X_std_imp, center = FALSE, scale. = FALSE)
+r_use <- min(r_now_fvar, ncol(pca_now_fvar$x))
+F_all <- pca_now_fvar$x[, 1:r_use, drop = FALSE]
+colnames(F_all) <- paste0("F", 1:r_use)
+
+# Costruiamo Z_t = [Y_std, F_all]
+stopifnot(nrow(Y_std) == nrow(F_all))
+Z_all <- cbind(Y_std, F_all)
+Z_df  <- as.data.frame(Z_all)
+
+# VAR su [Y, F]
+p_fix <- 2
+var_fvar_now <- VAR(Z_df, p = p_fix, type = "const")
+
+# Forecast a h = 1..4
+h_long <- 4
+fc_fvar_now <- predict(var_fvar_now, n.ahead = h_long)
+
+# Previsioni di Y (scala std)
+yh1_std_fvar <- sapply(vars_Y, function(nm) fc_fvar_now$fcst[[nm]][1, "fcst"])
+yh2_std_fvar <- sapply(vars_Y, function(nm) fc_fvar_now$fcst[[nm]][2, "fcst"])
+yh3_std_fvar <- sapply(vars_Y, function(nm) fc_fvar_now$fcst[[nm]][3, "fcst"])
+yh4_std_fvar <- sapply(vars_Y, function(nm) fc_fvar_now$fcst[[nm]][4, "fcst"])
+
+# De-standardizziamo alla scala trasformata
+yh1_fvar <- yh1_std_fvar * Y_sd + Y_mean
+yh2_fvar <- yh2_std_fvar * Y_sd + Y_mean
+yh3_fvar <- yh3_std_fvar * Y_sd + Y_mean
+yh4_fvar <- yh4_std_fvar * Y_sd + Y_mean
+names(yh1_fvar) <- names(yh2_fvar) <- names(yh3_fvar) <- names(yh4_fvar) <- vars_Y
+
+
+# =========================
+# 7.FVAR.1 – Back-transform a livelli (percorso ricorsivo h=1..4)
+# =========================
+
+# Usa la stessa funzione get_transform già definita in precedenza
+get_transform <- function(var) {
+  i <- match(var, metadata$ts_key)
+  tr <- if (is.na(i)) NA_character_ else metadata$transform[i]
+  ifelse(is.na(tr), "none", tolower(tr))
+}
+
+# Livelli originali delle Y (non trasformate) su tutto il campione
+levels_df_fvar <- df %>%
+  dplyr::mutate(date = as.Date(paste0(date, "-01"))) %>%
+  dplyr::select(date, dplyr::all_of(vars_Y))
+
+last_date_fvar <- max(df_train_clean$date, na.rm = TRUE)
+
+# Ultimo livello osservato L_t per ogni variabile
+L_t_vec_fvar <- setNames(numeric(length(vars_Y)), vars_Y)
+for (v in vars_Y) {
+  L_t_val <- levels_df_fvar[[v]][levels_df_fvar$date == last_date_fvar]
+  if (length(L_t_val) != 1 || !is.finite(L_t_val)) {
+    stop("FVAR NOW back-transform: non trovo L_t per variabile ", v)
+  }
+  L_t_vec_fvar[v] <- L_t_val
+}
+
+# Propagazione ricorsiva L_{t+h}
+L_h1_fvar <- L_h2_fvar <- L_h3_fvar <- L_h4_fvar <- setNames(numeric(length(vars_Y)), vars_Y)
+
+for (v in vars_Y) {
+  tr_v <- get_transform(v)
+  Lt   <- L_t_vec_fvar[v]
+  
+  if (v %in% growth_vars) {
+    # Per il PIL manteniamo la crescita in Δlog*100, non ricostruiamo il livello
+    L1 <- yh1_fvar[v]; L2 <- yh2_fvar[v]; L3 <- yh3_fvar[v]; L4 <- yh4_fvar[v]
+  } else if (tr_v == "logdiff") {
+    # y = 100 * Δlog(L) -> L_{t+1} = L_t * exp(y/100)
+    L1 <- Lt * exp(yh1_fvar[v] / 100)
+    L2 <- L1 * exp(yh2_fvar[v] / 100)
+    L3 <- L2 * exp(yh3_fvar[v] / 100)
+    L4 <- L3 * exp(yh4_fvar[v] / 100)
+  } else if (tr_v == "diff") {
+    # y = L_t - L_{t-1} -> L_{t+1} = L_t + y
+    L1 <- Lt + yh1_fvar[v]
+    L2 <- L1 + yh2_fvar[v]
+    L3 <- L2 + yh3_fvar[v]
+    L4 <- L3 + yh4_fvar[v]
+  } else {
+    # Nessuna trasformazione: già in livelli
+    L1 <- yh1_fvar[v]; L2 <- yh2_fvar[v]; L3 <- yh3_fvar[v]; L4 <- yh4_fvar[v]
+  }
+  
+  L_h1_fvar[v] <- L1
+  L_h2_fvar[v] <- L2
+  L_h3_fvar[v] <- L3
+  L_h4_fvar[v] <- L4
+}
+
+# Date target (come nel NOW DFM)
+h1_date_fvar <- seq(last_date_fvar, by = "quarter", length.out = 2)[2]
+h4_date_fvar <- seq(last_date_fvar, by = "quarter", length.out = 5)[5]
+
+# Tabelle finali NOW FVAR
+
+now_fvar_transformed <- data.frame(
+  variable       = vars_Y,
+  target_h1_date = h1_date_fvar,
+  forecast_h1    = as.numeric(yh1_fvar[vars_Y]),
+  target_h4_date = h4_date_fvar,
+  forecast_h4    = as.numeric(yh4_fvar[vars_Y]),
+  row.names = NULL
 )
 
-cat("\n=== State-Space Dynamic Factor Model Implementation Complete ===\n")
-cat("Key outputs:\n")
-cat("- nowcast_results_ss: Forecasts in transformed units\n")
-cat("- backtransformed_results_ss: Forecasts in level units\n")
-cat("- factors_smooth: Extracted common factors\n")
-cat("- Lambda_hat: Estimated factor loadings\n")
-cat("- ssm_forecast_summary: Results formatted for comparison\n")
-
-# ============================================================================
-# State-Space Model vs KOF Forecast Comparison
-# ============================================================================
-
-cat("\n=== Comparing State-Space Model with KOF Forecasts ===\n")
-
-# Get forecast dates from the state space model
-h1_date_ss <- backtransformed_results_ss$nowcast_h1_date[1]
-h4_date_ss <- backtransformed_results_ss$forecast_h4_date[1]
-
-# Create state space forecast points for comparison
-ss_pts <- bind_rows(
-  tibble(variable = vars_Y, date = h1_date_ss,
-         value = backtransformed_results_ss$forecast_h1_level,
-         horizon = "h1", source = "StateSpace"),
-  tibble(variable = vars_Y, date = h4_date_ss,
-         value = backtransformed_results_ss$forecast_h4_level,
-         horizon = "h4", source = "StateSpace")
+now_fvar_levels <- data.frame(
+  variable            = vars_Y,
+  target_h1_date      = h1_date_fvar,
+  forecast_h1_level   = as.numeric(L_h1_fvar[vars_Y]),
+  target_h4_date      = h4_date_fvar,
+  forecast_h4_level   = as.numeric(L_h4_fvar[vars_Y]),
+  row.names = NULL,
+  check.names = FALSE
 )
 
-# Get corresponding KOF forecasts for same dates
-kof_pts_ss <- bind_rows(
-  tibble(variable = vars_Y, date = h1_date_ss,
-         value = sapply(vars_Y, function(v) get_kof_value(h1_date_ss, v)),
-         horizon = "h1", source = "KOF"),
-  tibble(variable = vars_Y, date = h4_date_ss,
-         value = sapply(vars_Y, function(v) get_kof_value(h4_date_ss, v)),
-         horizon = "h4", source = "KOF")
+cat("\n=== FVAR – NOW forecasts (transformed units) ===\n")
+print(now_fvar_transformed)
+
+cat("\n=== FVAR – NOW forecasts (levels) ===\n")
+print(now_fvar_levels)
+
+# =========================
+#   8. NOW: PLOT VS KOF forecasts (DFM vs FVAR)
+# =========================
+
+last_date <- max(df_train_clean$date, na.rm = TRUE)
+h1_date   <- now_table_levels$target_h1_date[1]
+h4_date   <- now_table_levels$target_h4_date[1]
+
+# Serie storiche recenti (livelli)
+levels_recent <- df_train %>%
+  dplyr::select(date, all_of(vars_Y)) %>%
+  dplyr::filter(date >= as.Date("2022-01-01")) %>%
+  tidyr::pivot_longer(-date, names_to = "variable", values_to = "value")
+
+# --- PUNTI: nostro DFM (PCA+VAR) ---
+our_pts <- bind_rows(
+  now_table_levels %>%
+    transmute(variable,
+              date  = target_h1_date,
+              value = forecast_h1_level,
+              horizon = "h1",
+              source  = "DFM"),
+  now_table_levels %>%
+    transmute(variable,
+              date  = target_h4_date,
+              value = forecast_h4_level,
+              horizon = "h4",
+              source  = "DFM")
+)
+
+# --- GDP in growth per confronto con KOF (come prima) ---
+df_growth <- df %>%
+  mutate(date = as.Date(paste0(date, "-01"))) %>%
+  arrange(date) %>%
+  mutate(rvgdp_growth = c(NA, diff(log(rvgdp)) * 100))  # QoQ %
+
+df_kof_growth <- df_growth %>%
+  dplyr::select(date, rvgdp_growth, cpi, wkfreuro) %>%
+  rename(rvgdp = rvgdp_growth)
+
+df_kof_levels <- df_kof_growth
+
+get_kof_value <- function(date_target, varname) {
+  if (!varname %in% names(df_kof_levels)) return(NA_real_)
+  out <- df_kof_levels %>%
+    dplyr::filter(date == date_target) %>%
+    dplyr::pull(!!rlang::sym(varname))
+  if (length(out) == 0) NA_real_ else out[1]
+}
+
+# --- PUNTI: KOF ---
+kof_pts <- bind_rows(
+  tibble(
+    variable = vars_Y,
+    date     = h1_date,
+    value    = sapply(vars_Y, function(v) get_kof_value(h1_date, v)),
+    horizon  = "h1",
+    source   = "KOF"
+  ),
+  tibble(
+    variable = vars_Y,
+    date     = h4_date,
+    value    = sapply(vars_Y, function(v) get_kof_value(h4_date, v)),
+    horizon  = "h4",
+    source   = "KOF"
+  )
 ) %>% dplyr::filter(is.finite(value))
 
-# Calculate differences (State Space - KOF)
-differences_ss <- merge(
-  ss_pts %>% dplyr::select(variable, date, horizon, value) %>% dplyr::rename(ss_value = value),
-  kof_pts_ss %>% dplyr::select(variable, date, horizon, value) %>% dplyr::rename(kof_value = value),
-  by = c("variable", "date", "horizon"),
-  all.x = TRUE
-) %>%
-  dplyr::mutate(
-    difference = ss_value - kof_value,
-    abs_difference = abs(difference),
-    relative_diff_pct = 100 * difference / abs(kof_value)
-  )
+# --- PUNTI: FVAR (NOW) ---
+fvar_pts <- bind_rows(
+  now_fvar_levels %>%
+    transmute(variable,
+              date  = target_h1_date,
+              value = forecast_h1_level,
+              horizon = "h1",
+              source  = "FVAR"),
+  now_fvar_levels %>%
+    transmute(variable,
+              date  = target_h4_date,
+              value = forecast_h4_level,
+              horizon = "h4",
+              source  = "FVAR")
+)
 
-cat("\n=== State-Space vs KOF Forecast Differences ===\n")
-print(differences_ss)
+# ensure date are Date
+levels_recent$date <- as.Date(levels_recent$date)
+our_pts$date       <- as.Date(our_pts$date)
+kof_pts$date       <- as.Date(kof_pts$date)
+fvar_pts$date      <- as.Date(fvar_pts$date)
 
-# Summary statistics of differences
-cat("\n=== Summary of Forecast Differences ===\n")
-summary_stats_ss <- differences_ss %>%
-  dplyr::group_by(horizon) %>%
-  dplyr::summarise(
-    mean_abs_diff = mean(abs_difference, na.rm = TRUE),
-    median_abs_diff = median(abs_difference, na.rm = TRUE),
-    max_abs_diff = max(abs_difference, na.rm = TRUE),
-    mean_relative_diff = mean(abs(relative_diff_pct), na.rm = TRUE),
-    .groups = 'drop'
-  )
-print(summary_stats_ss)
+# Palette: DFM (blu), KOF (arancio), FVAR (verde)
+pal_colors <- c(
+  "DFM"  = "#1f77b4",  # blu
+  "KOF"  = "#ff7f0e",  # arancio
+  "FVAR" = "#2ca02c"   # verde
+)
+pal_shapes <- c(
+  "DFM"  = 16,  # cerchio pieno
+  "KOF"  = 17,  # triangolo
+  "FVAR" = 15   # quadrato
+)
 
-# Detailed comparison by variable
-cat("\n=== Detailed Comparison by Variable ===\n")
-detailed_comparison_ss <- differences_ss %>%
-  dplyr::select(variable, horizon, ss_value, kof_value, difference, relative_diff_pct) %>%
-  dplyr::arrange(variable, horizon)
-print(detailed_comparison_ss)
+# Etichette pannelli
+facet_labels <- c(
+  "rvgdp"    = "Real GDP Growth",
+  "cpi"      = "Inflation (CPI)",
+  "wkfreuro" = "CHF/EUR Exchange Rate"
+)
 
-# ============================================================================
-# Visualization: State-Space Model vs KOF Forecasts
-# ============================================================================
-
-# Color palette for state space comparison
-pal_colors_ss <- c("StateSpace" = "#2ca02c", "KOF" = "#ff7f0e")
-pal_shapes_ss <- c("StateSpace" = 18, "KOF" = 17)
-
-# Ensure dates are properly formatted
-ss_pts$date <- as.Date(ss_pts$date)
-kof_pts_ss$date <- as.Date(kof_pts_ss$date)
-
-# Create comparison plot
-p_ss_comparison <- ggplot() +
+p <- ggplot() +
   geom_line(data = levels_recent,
             aes(x = date, y = value),
             linewidth = 0.6, color = "grey40") +
   geom_vline(xintercept = as.numeric(last_date),
              linetype = "solid", color = "grey50") +
-  geom_point(data = bind_rows(ss_pts, kof_pts_ss),
-             aes(x = date, y = value, color = source, shape = source),
-             size = 3.2) +
+  geom_point(
+    data = bind_rows(our_pts, kof_pts, fvar_pts),
+    aes(x = date, y = value, color = source, shape = source),
+    size = 3.2
+  ) +
   facet_wrap(
     ~ variable,
     scales = "free_y",
-    ncol = 1,
+    ncol   = 1,
     labeller = as_labeller(facet_labels)
   ) +
   scale_color_manual(
-    values = pal_colors_ss,
-    breaks = c("StateSpace", "KOF"),
-    labels = c("State-Space DFM", "KOF forecast"),
-    name = ""
+    values = pal_colors,
+    breaks = c("DFM", "FVAR", "KOF"),
+    labels = c("Dynamic Factor Model", "FVAR", "KOF forecast"),
+    name   = ""
   ) +
   scale_shape_manual(
-    values = pal_shapes_ss,
-    breaks = c("StateSpace", "KOF"),
-    labels = c("State-Space DFM", "KOF forecast"),
-    name = ""
+    values = pal_shapes,
+    breaks = c("DFM", "FVAR", "KOF"),
+    labels = c("Dynamic Factor Model", "FVAR", "KOF forecast"),
+    name   = ""
   ) +
-  labs(title = "Forecast Comparison: State-Space Dynamic Factor Model vs KOF",
-       subtitle = paste0("Historical until last observed value: ",
-                         format(last_date, "%Y-%m-%d")),
-       x = "Date", y = "Levels") +
+  labs(
+    title = "Forecast Comparison: Dynamic Factor Model (PCA+VAR), FVAR and KOF",
+    subtitle = paste0("Historical until last observed value: ",
+                      format(last_date, "%Y-%m-%d")),
+    x = "Date",
+    y = "Levels"
+  ) +
   theme_minimal(base_size = 13) +
   theme(
     legend.position = "top",
     strip.text = element_text(face = "bold")
   )
 
-print(p_ss_comparison)
+print(p)
 
-# ============================================================================
-# Comparison of Both Models (PCA+VAR vs State-Space) vs KOF
-# ============================================================================
+# =============================
+# Economic Indicator – Step 1:
+# Estrazione del primo fattore F1 (NOW, su tutto il campione)
+# =============================
 
-cat("\n=== Three-Way Comparison: PCA+VAR vs State-Space vs KOF ===\n")
+# Safety: oggetti che devono esistere
+req_ei_objs <- c("df_train_clean", "vars_X")
+miss_ei <- req_ei_objs[!vapply(req_ei_objs, exists, logical(1))]
+if (length(miss_ei)) {
+  stop("Mancano oggetti per costruire l'Economic Indicator: ",
+       paste(miss_ei, collapse = ", "))
+}
 
-# Combine all forecasts for comparison
-all_forecasts <- bind_rows(
-  our_pts %>% mutate(source = "PCA_VAR"),  # Rename for clarity
-  ss_pts,
-  kof_pts_ss
+# Usiamo gli stessi regressori X usati per DFM/FVAR
+X_now_names <- vars_X
+
+# Costruiamo un data frame "NOW" ordinato nel tempo
+df_now_ei <- df_train_clean %>%
+  dplyr::select(date, dplyr::all_of(X_now_names)) %>%
+  dplyr::arrange(date)
+
+# Matrice X (tutto il campione disponibile, già trasformato)
+X_all_ei <- as.matrix(df_now_ei[, X_now_names, drop = FALSE])
+
+# Standardizzazione come nel NOW (full history)
+X_mean_ei <- apply(X_all_ei, 2, mean, na.rm = TRUE)
+X_sd_ei   <- apply(X_all_ei, 2, sd,   na.rm = TRUE)
+X_sd_ei[X_sd_ei == 0] <- 1
+
+X_std_ei <- scale(X_all_ei, center = X_mean_ei, scale = X_sd_ei)
+
+# Imputazione NA: 0 = media sulla scala standardizzata
+X_std_imp_ei <- X_std_ei
+for (j in seq_len(ncol(X_std_imp_ei))) {
+  X_std_imp_ei[is.na(X_std_imp_ei[, j]), j] <- 0
+}
+
+# PCA su X_std_imp_ei (tutto il campione, NOW)
+pca_ei <- prcomp(X_std_imp_ei, center = FALSE, scale. = FALSE)
+
+# Primo fattore F1 (Economic Indicator grezzo)
+F1 <- pca_ei$x[, 1]
+
+# Data frame base per l'indicatore
+ei_raw <- data.frame(
+  date = df_now_ei$date,
+  F1   = as.numeric(F1)
 )
 
-# Calculate all pairwise differences
-pca_vs_kof <- merge(
-  our_pts %>% dplyr::select(variable, horizon, value) %>% dplyr::rename(pca_value = value),
-  kof_pts_ss %>% dplyr::select(variable, horizon, value) %>% dplyr::rename(kof_value = value),
-  by = c("variable", "horizon"), all.x = TRUE
-) %>% dplyr::mutate(comparison = "PCA_VAR_vs_KOF", difference = pca_value - kof_value)
+# Controllo veloce
+head(ei_raw)
+summary(ei_raw$F1)
 
-ss_vs_kof <- differences_ss %>% 
-  dplyr::select(variable, horizon, difference) %>% 
-  dplyr::mutate(comparison = "StateSpace_vs_KOF")
+# =============================
+# Economic Indicator – Step 2:
+# Normalizzazione (SD=1 e SD=10 con media=100)
+# =============================
 
-pca_vs_ss <- merge(
-  our_pts %>% dplyr::select(variable, horizon, value) %>% dplyr::rename(pca_value = value),
-  ss_pts %>% dplyr::select(variable, horizon, value) %>% dplyr::rename(ss_value = value),
-  by = c("variable", "horizon"), all.x = TRUE
-) %>% dplyr::mutate(comparison = "PCA_VAR_vs_StateSpace", difference = pca_value - ss_value)
+# Safety check
+if (!exists("ei_raw")) stop("Devi prima eseguire lo step 1 (ei_raw)")
 
-all_differences <- dplyr::bind_rows(
-  pca_vs_kof %>% dplyr::select(variable, horizon, comparison, difference),
-  ss_vs_kof %>% dplyr::select(variable, horizon, comparison, difference),
-  pca_vs_ss %>% dplyr::select(variable, horizon, comparison, difference)
-)
+# Calcolo media e sd del fattore
+F_mean <- mean(ei_raw$F1, na.rm = TRUE)
+F_sd   <- sd(ei_raw$F1, na.rm = TRUE)
 
-cat("\n=== All Pairwise Differences ===\n")
-print(all_differences)
+# Versione z-score (SD=1, mean=0)
+ei_raw$EI_z <- (ei_raw$F1 - F_mean) / F_sd
 
-# Summary of model performance vs KOF
-performance_summary <- all_differences %>%
-  dplyr::filter(grepl("_vs_KOF", comparison)) %>%
-  dplyr::group_by(comparison, horizon) %>%
-  dplyr::summarise(
-    mean_abs_diff = mean(abs(difference), na.rm = TRUE),
-    median_abs_diff = median(abs(difference), na.rm = TRUE),
-    max_abs_diff = max(abs(difference), na.rm = TRUE),
-    .groups = 'drop'
+# Versione tipo KOF (mean=100, SD=10)
+ei_raw$EI_kof <- 100 + 10 * (ei_raw$F1 - F_mean) / F_sd
+
+# Output finale: un solo oggetto pulito
+economic_indicator <- ei_raw %>%
+  dplyr::select(date, EI_z, EI_kof)
+
+# Controllo
+summary(economic_indicator)
+
+# Grafico base per verifica visiva
+library(ggplot2)
+ggplot(economic_indicator, aes(x = date)) +
+  geom_line(aes(y = EI_z), color = "#1f77b4", linewidth = 1) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  labs(
+    title = "Economic Indicator (z-score version)",
+    subtitle = "First principal component from PCA (mean=0, sd=1)",
+    x = "Date", y = "Standardized index"
+  ) +
+  theme_minimal(base_size = 13)
+
+# =============================
+# Economic Indicator vs Real GDP growth (QoQ, z-score)
+# =============================
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# 1) Crescita QoQ del PIL reale (rvgdp)
+gdp_growth <- df %>%
+  mutate(date = as.Date(paste0(date, "-01"))) %>%
+  arrange(date) %>%
+  mutate(rvgdp_growth = c(NA, diff(log(rvgdp)) * 100)) %>%
+  dplyr::select(date, rvgdp_growth)
+
+# 2) Merge con EI_z
+ei_gdp <- economic_indicator %>%
+  left_join(gdp_growth, by = "date")
+
+# 3) Standardizziamo anche la crescita del PIL (per confronto visivo)
+mean_gdp <- mean(ei_gdp$rvgdp_growth, na.rm = TRUE)
+sd_gdp   <- sd(ei_gdp$rvgdp_growth,   na.rm = TRUE)
+
+ei_gdp <- ei_gdp %>%
+  mutate(
+    rvgdp_z = (rvgdp_growth - mean_gdp) / sd_gdp
   )
 
-cat("\n=== Model Performance Summary (vs KOF) ===\n")
-print(performance_summary)
+# 4) Mettiamo le due serie in formato long per ggplot
+plot_data <- ei_gdp %>%
+  dplyr::select(date, EI_z, rvgdp_z) %>%
+  tidyr::pivot_longer(cols = c(EI_z, rvgdp_z),
+               names_to = "series",
+               values_to = "value")
 
+series_labels <- c(
+  "EI_z"    = "Economic Indicator (factor, z-score)",
+  "rvgdp_z" = "Real GDP growth (QoQ, z-score)"
+)
+
+# 5) Grafico
+p_ei_gdp <- ggplot(plot_data, aes(x = date, y = value, color = series)) +
+  geom_line(linewidth = 0.9) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  scale_color_manual(
+    values = c("EI_z" = "#1f77b4", "rvgdp_z" = "#ff7f0e"),
+    labels = series_labels,
+    name   = ""
+  ) +
+  labs(
+    title    = "Economic Indicator vs Real GDP Growth",
+    subtitle = "Both series standardized (z-score)",
+    x        = "Date",
+    y        = "Standardized value"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "top"
+  )
+
+print(p_ei_gdp)
+ 
+
+# =============================
+# 1) Import KOF barometer (mensile) e passaggio a trimestrale
+# =============================
+library(dplyr)
+library(lubridate)
+install.packages("readxl")   # esegui solo una volta
+library(readxl)
+
+kof_path <- "C:/Users/kfree/OneDrive/Desktop/MASTER 3/MACRO FORECAST/DATASET/KOF_BAROMETER.xlsx"
+kof_raw <- read_excel(kof_path, sheet = 1)
+
+
+# Adatta questi nomi se nel file sono diversi
+names(kof_raw)[1:2] <- c("month_str", "kof_barometer")
+
+kof_q <- kof_raw %>%
+  # "2009-09" -> "2009-09-01" -> Date
+  mutate(date = as.Date(paste0(month_str, "-01"))) %>%
+  arrange(date) %>%
+  # data del trimestre (inizio trimestre)
+  mutate(q_date = floor_date(date, "quarter")) %>%
+  group_by(q_date) %>%
+  # prendi SOLO l'ultimo mese disponibile del trimestre
+  slice_max(order_by = date, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  transmute(
+    date = q_date,                # data trimestrale (es. 2009-10-01 per Q4)
+    kof_barometer = kof_barometer # valore del barometro a fine trimestre
+  ) %>%
+  arrange(date)
+
+# =============================
+# 2) GDP growth QoQ (%) – trimestrale
+# =============================
+
+gdp_q <- df %>%
+  mutate(date = as.Date(paste0(date, "-01"))) %>%
+  arrange(date) %>%
+  mutate(
+    gdp_growth = c(NA, diff(log(rvgdp)) * 100)   # crescita QoQ in %
+  ) %>%
+  dplyr::select(date, gdp_growth)
+
+# =============================
+# 3) Merge: EI (trimestrale), GDP growth e KOF (trimestrale)
+# =============================
+
+merged <- economic_indicator %>%
+  # abbiamo EI_z (z-score del fattore)
+  left_join(gdp_q,   by = "date") %>%
+  left_join(kof_q,   by = "date")
+
+# =============================
+# 4) Mettiamo tutto sulla stessa scala: mean=100, sd=100
+# =============================
+
+# EI_z è già z-score: basta riscalararlo
+merged <- merged %>%
+  mutate(
+    EI_100_raw = 100 + 100 * EI_z
+  )
+
+# Standardizziamo GDP growth e KOF in z-score, poi li portiamo a mean=100, sd=100
+gdp_mean <- mean(merged$gdp_growth, na.rm = TRUE)
+gdp_sd   <- sd(merged$gdp_growth,   na.rm = TRUE)
+
+kof_mean <- mean(merged$kof_barometer, na.rm = TRUE)
+kof_sd   <- sd(merged$kof_barometer,   na.rm = TRUE)
+
+merged <- merged %>%
+  mutate(
+    GDP_100 = 100 + 100 * ((gdp_growth    - gdp_mean) / gdp_sd),
+    KOF_100 = 100 + 100 * ((kof_barometer - kof_mean) / kof_sd),
+    EI_100  = EI_100_raw
+  )
+
+# =============================
+# 5) Long format per il grafico
+# =============================
+
+plot_data <- merged %>%
+  dplyr::select(date, EI_100, GDP_100, KOF_100) %>%
+  pivot_longer(
+    cols      = c(EI_100, GDP_100, KOF_100),
+    names_to  = "series",
+    values_to = "value"
+  )
+
+series_labels <- c(
+  "EI_100"  = "Economic Indicator (factor, SD=100)",
+  "GDP_100" = "Real GDP growth QoQ (SD=100)",
+  "KOF_100" = "KOF Barometer (SD=100)"
+)
+
+# =============================
+# 6) Grafico
+# =============================
+
+ggplot(plot_data, aes(x = date, y = value, color = series)) +
+  geom_line(linewidth = 0.9) +
+  geom_hline(yintercept = 100, linetype = "dashed", color = "grey40") +
+  scale_color_manual(
+    values = c(
+      "EI_100"  = "#1f77b4",  # blu
+      "GDP_100" = "#ff7f0e",  # arancio
+      "KOF_100" = "#2ca02c"   # verde
+    ),
+    labels = series_labels,
+    name   = ""
+  ) +
+  labs(
+    title    = "Economic Indicator, GDP Growth and KOF Barometer",
+    subtitle = "All series standardized to mean = 100, sd = 100 (quarterly)",
+    x        = "Date",
+    y        = "Index (mean=100, sd=100)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "top"
+  )
