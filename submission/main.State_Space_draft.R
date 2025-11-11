@@ -1,9 +1,4 @@
-# ============================================
-#   9. STATE SPACE: Dynamic Factor Model Initialization (PCA/SVD → F0, Lambda0, R0, A0, Q0)
-# Compatible with KFAS: x_t = Λ f_t + e_t ; f_t = A f_{t-1} + u_t
-# ============================================
-# 
-# 
+
 # # ============================================
 # # STATE SPACE: Dynamic Factor Model Initialization (PCA/SVD → F0, Lambda0, R0, A0, Q0)
 # # Compatible with KFAS: x_t = Λ f_t + e_t ; f_t = A f_{t-1} + u_t
