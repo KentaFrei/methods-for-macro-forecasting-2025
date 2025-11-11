@@ -180,7 +180,28 @@ cat("First origin -> targets h1/h4:  ", as.character(origin_dates[1]), " -> ",
     as.character(target_h1_dates[1]), " / ", as.character(target_h4_dates[1]), "\n")
 cat("Last origin -> targets h1/h4:   ", as.character(origin_dates[length(origin_dates)]), " -> ",
     as.character(target_h1_dates[length(target_h1_dates)]), " / ", as.character(target_h4_dates[length(target_h4_dates)]), "\n")
+# --- De-duplicate highly collinear series (cluster on |corr|)
+X_train_for_sel <- as.matrix(df_train_std[1:t0_idx, vars_X, drop = FALSE])
 
+# Guard: need at least 2 cols and some non-NA variance
+ok <- apply(X_train_for_sel, 2, function(x) sd(x, na.rm = TRUE) > 0)
+X_train_for_sel <- X_train_for_sel[, ok, drop = FALSE]
+vars_X <- colnames(X_train_for_sel)
+
+C  <- cor(X_train_for_sel, use = "pairwise.complete.obs")
+d  <- as.dist(1 - abs(C))
+hc <- hclust(d, method = "average")
+
+# Cut height: 0.1 ≈ keep 1 from any group with |ρ| > 0.9
+groups <- cutree(hc, h = 0.1)
+
+# Keep the column in each cluster with the fewest NAs (or highest variance—your choice)
+keepers <- tapply(colnames(X_train_for_sel), groups, function(cols) {
+  nafrac <- colMeans(is.na(X_train_for_sel[, cols, drop = FALSE]))
+  cols[which.min(nafrac)]
+})
+
+vars_X <- unname(unlist(keepers))
 # Prepare initial training matrices
 X0 <- as.matrix(df_train_std[1:t0_idx, vars_X, drop = FALSE])
 Y0 <- as.matrix(df_train_std[1:t0_idx, vars_Y,     drop = FALSE])
@@ -285,6 +306,7 @@ ggplot(df_pca, aes(x = Component, y = Cumulative)) +
     panel.grid.minor = element_blank(),
     plot.title = element_text(face = "bold")
   )
+
 
 # ================================
 # 4. Forecasting with PCA + VAR (Dynamic Factor Model)
