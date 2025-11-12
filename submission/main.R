@@ -16,17 +16,18 @@ library(rlang)
 library(KFAS)
 library(lubridate)
 library(readxl)
-
-
-
 kfilepath_data <- "C:/Users/kfree/OneDrive/Desktop/MASTER 3/MACRO FORECAST/DATASET/data_quarterly.csv"
 kfilepath_metadata <- "C:/Users/kfree/OneDrive/Desktop/MASTER 3/MACRO FORECAST/DATASET/metadata_quarterly_en.csv"
 nfilepath_data <- "~/Documents/school/methods-for-macro-forecasting-2025/submission/data/data_quarterly.csv"
 nfilepath_metadata <- "~/Documents/school/methods-for-macro-forecasting-2025/submission/data/metadata_quarterly_en.csv"
+kkof_path <- "C:/Users/kfree/OneDrive/Desktop/MASTER 3/MACRO FORECAST/DATASET/KOF_BAROMETER.xlsx"
+nkof_path <- "~/Documents/school/methods-for-macro-forecasting-2025/submission/data/KOF_BAROMETER.xlsx"
+
 # Adjust depending on environment
-df <- utils::read.csv(kfilepath_data)
-metadata <- utils::read.csv(kfilepath_metadata)
-cutoff_pre_covid <- as.Date("2018-12-31")
+df <- utils::read.csv(nfilepath_data)
+metadata <- utils::read.csv(nfilepath_metadata)
+kof_raw <- read_excel(kkof_path, sheet = 1)
+cutoff_pre_covid <- as.Date("2019-12-31")
 # ================================
 # 2. Data Preparation
 # ================================
@@ -300,7 +301,7 @@ ggplot(df_pca, aes(x = Component, y = Cumulative)) +
   scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
   labs(
     title = "Cumulative Variance Explained by Principal Components",
-    subtitle = "Dashed red line = Bai–Ng selected number of factors",
+    
     x = "Number of Factors (Principal Components)",
     y = "Cumulative Variance Explained (%)"
   ) +
@@ -1694,8 +1695,7 @@ print(p_ei_gdp)
 # Import KOF barometer (monthly) and convert to quarterly
 # =============================
 
-kof_path <- "C:/Users/kfree/OneDrive/Desktop/MASTER 3/MACRO FORECAST/DATASET/KOF_BAROMETER.xlsx"
-kof_raw <- read_excel(kof_path, sheet = 1)
+
 
 
 # Adjust these names if they differ in the file
