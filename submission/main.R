@@ -14,6 +14,9 @@ library(tidyr)
 library(urca)
 library(rlang)
 library(KFAS)
+library(lubridate)
+library(readxl)
+
 
 
 kfilepath_data <- "C:/Users/kfree/OneDrive/Desktop/MASTER 3/MACRO FORECAST/DATASET/data_quarterly.csv"
@@ -212,7 +215,7 @@ sum(names(df_train_clean)[-1] != names(df_train)[-1])
 # How many columns are transformed withing the remaining ones?
 common <- intersect(names(df_train_clean)[-1], names(df_train)[-1])
 changed <- sum(sapply(common, function(nm) !identical(df_train_clean[[nm]], df_train[[nm]][-1])))
-cat("Serie effettivamente trasformate (tra quelle rimaste): ", changed, "\n")
+cat("Transformed Series: ", changed, "\n")
 
 # Which columns are deleted (es. all NA after logdiff or sd≈0)?
 dropped <- setdiff(names(df_train)[-1], names(df_train_clean)[-1])
@@ -230,7 +233,7 @@ anyNA(X0)
 # 3. Bai-Ng factors selection
 # ================================
 
-# --- Definition before applying ---
+# Definition before applying 
 bn_select_r_icp2 <- function(X, rmax = 10) {
   X <- as.matrix(X)
   Tn <- nrow(X); Nn <- ncol(X)
@@ -249,7 +252,7 @@ bn_select_r_icp2 <- function(X, rmax = 10) {
   list(r = r_sel, IC = data.frame(r = rgrid, ICp2 = ICp2))
 }
 
-# --- Simple imputation ONLY for r selection ---
+# Simple imputation ONLY for r selection 
 X0_imp <- X0
 X0_imp[!is.finite(X0_imp)] <- NA
 for (j in seq_len(ncol(X0_imp))) {
@@ -273,11 +276,11 @@ df_pca <- data.frame(
   Cumulative = cumvar_explained
 )
 
-# --- Step 3: Bai–Ng selection (if not yet run) ---
+# Bai–Ng selection (if not yet run) 
 bn <- bn_select_r_icp2(X0_imp, rmax = 50)
 r_selected <- bn$r
 
-# --- Step 4: Plot cumulative variance explained ---
+# Plot cumulative variance explained 
 library(ggplot2)
 
 ggplot(df_pca, aes(x = Component, y = Cumulative)) +
@@ -406,18 +409,18 @@ cat("\n=== Forecast loop completed ===\n")
 # 5) OOS metrics + Back-transformation to levels
 # ================================
 
-# ---- Safety checks (avoid cryptic errors) ----
+# Safety checks (avoid cryptic errors) 
 req_objs <- c("vars_Y","metadata","df_train",
               "origin_dates","h1_dates","h4_dates","oos_origin_idx","h_long",
               "pred_h1_real","pred_h4_real","real_h1_real","real_h4_real")
 miss <- req_objs[!vapply(req_objs, exists, logical(1))]
 if (length(miss)) stop("Those objects are missing: ", paste(miss, collapse=", "))
 
-# ---- Helper: RMSE / MAE ----
+# Helper: RMSE / MAE 
 rmse <- function(e) sqrt(mean(e^2, na.rm = TRUE))
 mae  <- function(e) mean(abs(e), na.rm = TRUE)
 
-# ---- Metrics in transformed scale ----
+# Metrics in transformed scale 
 rmse_h1_tr <- sapply(seq_len(ncol(real_h1_real)), function(j) rmse(real_h1_real[, j] - pred_h1_real[, j]))
 rmse_h4_tr <- sapply(seq_len(ncol(real_h4_real)), function(j) rmse(real_h4_real[, j] - pred_h4_real[, j]))
 mae_h1_tr  <- sapply(seq_len(ncol(real_h1_real)), function(j) mae(real_h1_real[, j] - pred_h1_real[, j]))
@@ -434,7 +437,7 @@ metrics_transformed <- data.frame(
 cat("\n=== Forecast Evaluation (Transformed Units) ===\n")
 print(metrics_transformed)
 
-# ---- Back-transform to levels (h=1 e h=4) ----
+# Back-transform to levels (h=1 e h=4) 
 get_transform <- function(var) {
   i <- match(var, metadata$ts_key)
   tr <- if (is.na(i)) NA_character_ else metadata$transform[i]
@@ -538,7 +541,7 @@ metrics_levels <- data.frame(
 cat("\n=== Forecast Evaluation (Levels) ===\n")
 print(metrics_levels)
 
-# ---- Build oos_results (trasformed + levels) ----
+# Build oos_results (trasformed + levels) 
 oos_results <- data.frame(
   origin_date = origin_dates,
   h1_date = h1_dates,
@@ -1025,9 +1028,9 @@ p <- ggplot() +
     ~ variable,
     scales = "free_y",
     ncol   = 1,
-    labeller = as_labeller(facet_labels)   # <-- NUOVO: titoli pannelli
+    labeller = as_labeller(facet_labels)   # TITLES
   ) +
-  # legenda 
+  # legend
   scale_color_manual(
     values = pal_colors,
     breaks = c("Our", "KOF"),
@@ -1053,16 +1056,16 @@ p <- ggplot() +
 print(p)
 
 # ================================
-# 6. Forecasting with FVAR (Factor-Augmented VAR)
+# 9. Forecasting with FVAR (Factor-Augmented VAR)
 # ================================
 
-# Usiamo stessi target, stesse origini e stesso h_long
+# We use the same targets, same origins, and same h_long
 nY    <- length(vars_Y)
 nOrg  <- length(oos_origin_idx)
 h_long <- 4
-p_fix  <- 2  # stesso p del VAR sui fattori
+p_fix  <- 2  # same p as the VAR on factors
 
-# Matrici per previsioni FVAR
+# Matrices for FVAR forecasts
 pred_h1_real_fvar <- pred_h4_real_fvar <-
   matrix(NA, nrow = nOrg, ncol = nY, dimnames = list(NULL, vars_Y))
 
@@ -1074,49 +1077,49 @@ cat("\n=== Expanding-window forecasting: FVAR ===\n")
 k <- 0
 for (tcut in oos_origin_idx) {
   k <- k + 1
-  cat("FVAR Origin", k, "/", nOrg, "— fino a", as.character(df_train_std$date[tcut]), "\n")
+  cat("FVAR Origin", k, "/", nOrg, "— up to", as.character(df_train_std$date[tcut]), "\n")
   
-  # Dati fino all'origine tcut
+  # Data up to origin tcut
   X_train <- as.matrix(df_train_std[1:tcut, vars_X, drop = FALSE])
   Y_train <- as.matrix(df_train_std[1:tcut, vars_Y, drop = FALSE])
   
-  # Standardizzazione X
+  # Standardization of X
   X_mean <- colMeans(X_train, na.rm = TRUE)
   X_sd   <- apply(X_train, 2, sd, na.rm = TRUE); X_sd[X_sd == 0] <- 1
   X_std  <- scale(X_train, center = X_mean, scale = X_sd)
-  # Imputazione NA in X_std con media (0 in scala standardizzata)
+  # Impute NA in X_std with mean (0 in standardized scale)
   for (j in seq_len(ncol(X_std))) {
     m <- mean(X_std[, j], na.rm = TRUE); if (!is.finite(m)) m <- 0
     X_std[is.na(X_std[, j]), j] <- m
   }
   
-  # Standardizzazione Y
+  # Standardization of Y
   Y_mean <- colMeans(Y_train, na.rm = TRUE)
   Y_sd   <- apply(Y_train, 2, sd, na.rm = TRUE); Y_sd[Y_sd == 0] <- 1
   Y_std  <- scale(Y_train, center = Y_mean, scale = Y_sd)
   
-  # PCA sui regressori X_std (stesso r_fixed scelto prima con Bai–Ng)
+  # PCA on regressors X_std (same r_fixed chosen before with Bai–Ng)
   pca_fit <- prcomp(X_std, center = FALSE, scale. = FALSE)
   F_train <- pca_fit$x[, 1:r_fixed, drop = FALSE]
   colnames(F_train) <- paste0("F", seq_len(r_fixed))
   
-  # Costruiamo il dataset per la VAR: Z_t = [Y_t, F_t]
+  # Build dataset for the VAR: Z_t = [Y_t, F_t]
   Z_train <- cbind(Y_std, F_train)
   Z_df    <- as.data.frame(Z_train)
   
-  # FVAR: VAR sui target + fattori
+  # FVAR: VAR on targets + factors
   var_fvar <- VAR(Z_df, p = p_fix, type = "const")
   fc_fvar  <- predict(var_fvar, n.ahead = h_long)
   
-  # Previsioni di Y (in scala standardizzata) a h=1 e h=4
+  # Forecasts of Y (in standardized scale) for h=1 and h=4
   pred_h1_std <- sapply(vars_Y, function(nm) fc_fvar$fcst[[nm]][1, "fcst"])
   pred_h4_std <- sapply(vars_Y, function(nm) fc_fvar$fcst[[nm]][h_long, "fcst"])
   
-  # Salvataggio standardizzato
+  # Save standardized forecasts
   pred_h1_std_fvar_mat[k, ] <- pred_h1_std
   pred_h4_std_fvar_mat[k, ] <- pred_h4_std
   
-  # De-standardizzazione (torno alla scala "trasformata" come df_train_clean)
+  # De-standardization (return to the "transformed" scale as in df_train_clean)
   pred_h1_real_fvar[k, ] <- pred_h1_std * Y_sd + Y_mean
   pred_h4_real_fvar[k, ] <- pred_h4_std * Y_sd + Y_mean
 }
@@ -1124,7 +1127,7 @@ for (tcut in oos_origin_idx) {
 cat("\n=== FVAR forecast loop completed ===\n")
 
 # ================================
-# 6.1. FVAR – OOS metrics in transformed units
+# 9.1. FVAR – OOS metrics in transformed units
 # ================================
 
 rmse_h1_tr_fvar <- sapply(seq_len(ncol(real_h1_real)), function(j) rmse(real_h1_real[, j] - pred_h1_real_fvar[, j]))
@@ -1145,10 +1148,10 @@ cat("\n=== FVAR – Forecast Evaluation (Transformed Units) ===\n")
 print(metrics_transformed_fvar)
 
 # ================================
-# 6.2. FVAR – Back-transform to levels
+# 9.2. FVAR – Back-transform to levels
 # ================================
 
-# Pre-allocation di liste
+# Pre-allocation of lists
 pred_h1_level_fvar <- setNames(vector("list", length(vars_Y)), vars_Y)
 pred_h4_level_fvar <- setNames(vector("list", length(vars_Y)), vars_Y)
 real_h1_level_fvar <- setNames(vector("list", length(vars_Y)), vars_Y)
@@ -1156,18 +1159,18 @@ real_h4_level_fvar <- setNames(vector("list", length(vars_Y)), vars_Y)
 
 for (v in vars_Y) {
   tr_v   <- get_transform(v)
-  # stessi "base" usati per il DFM
+  # same “base” used for the DFM
   base_h1 <- levels_df[[v]][oos_origin_idx]
   base_h4 <- levels_df[[v]][oos_origin_idx + (h_long - 1)]
   L_t1    <- levels_df[[v]][oos_origin_idx + 1]
   L_t4    <- levels_df[[v]][oos_origin_idx + h_long]
   
-  # previsioni FVAR in scala trasformata
+  # FVAR forecasts in transformed scale
   yhat_h1 <- pred_h1_real_fvar[, v]
   yhat_h4 <- pred_h4_real_fvar[, v]
   
   if (v %in% growth_vars) {
-    # PIL in Δlog×100 (QoQ %), come prima
+    # GDP in Δlog×100 (QoQ %), as before
     pred_h1_level_fvar[[v]] <- yhat_h1
     pred_h4_level_fvar[[v]] <- yhat_h4
     real_h1_level_fvar[[v]] <- real_h1_real[, v]
@@ -1195,7 +1198,7 @@ pred_h4_level_fvar <- as.data.frame(pred_h4_level_fvar, check.names = FALSE)
 real_h1_level_fvar <- as.data.frame(real_h1_level_fvar, check.names = FALSE)
 real_h4_level_fvar <- as.data.frame(real_h4_level_fvar, check.names = FALSE)
 
-# Metriche FVAR in livelli
+# FVAR metrics in levels
 rmse_h1_lvl_fvar <- sapply(vars_Y, function(v) rmse(real_h1_level_fvar[[v]] - pred_h1_level_fvar[[v]]))
 rmse_h4_lvl_fvar <- sapply(vars_Y, function(v) rmse(real_h4_level_fvar[[v]] - pred_h4_level_fvar[[v]]))
 mae_h1_lvl_fvar  <- sapply(vars_Y, function(v) mae(real_h1_level_fvar[[v]] - pred_h1_level_fvar[[v]]))
@@ -1214,17 +1217,17 @@ cat("\n=== FVAR – Forecast Evaluation (Levels) ===\n")
 print(metrics_levels_fvar)
 
 # =========================
-# 7.FVAR – NOW forecast (h=1..4) with Factor-Augmented VAR
+# 10. FVAR – NOW forecast (h=1..4) with Factor-Augmented VAR
 # =========================
 
-# Safety: oggetti che devono esistere dalla sezione NOW DFM
+# Safety: objects that must exist from the NOW DFM section
 req_now_objs <- c("df_train_clean","vars_Y","vars_X","growth_vars","metadata","df")
 miss_now <- req_now_objs[!vapply(req_now_objs, exists, logical(1))]
 if (length(miss_now)) {
   stop("Missing objects for FVAR NOW: ", paste(miss_now, collapse = ", "))
 }
 
-# Ricostruiamo df_now, X_all, Y_all come nella NOW DFM
+# Rebuild df_now, X_all, Y_all as in NOW DFM
 X_now_names <- vars_X
 
 needed_cols <- c("date", vars_Y, X_now_names)
@@ -1236,7 +1239,7 @@ row.names(df_now) <- NULL
 X_all <- as.matrix(df_now[, X_now_names, drop = FALSE])
 Y_all <- as.matrix(df_now[, vars_Y,      drop = FALSE])
 
-# Standardizziamo X e Y (full history)
+# Standardize X and Y (full history)
 X_mean <- apply(X_all, 2, mean, na.rm = TRUE)
 X_sd   <- apply(X_all, 2, sd,   na.rm = TRUE); X_sd[X_sd == 0] <- 1
 X_std  <- scale(X_all, center = X_mean, scale = X_sd)
@@ -1245,83 +1248,82 @@ Y_mean <- apply(Y_all, 2, mean, na.rm = TRUE)
 Y_sd   <- apply(Y_all, 2, sd,   na.rm = TRUE); Y_sd[Y_sd == 0] <- 1
 Y_std  <- scale(Y_all, center = Y_mean, scale = Y_sd)
 
-# Imputazione NA in X standardizzato (0 = media)
+# Impute NA in standardized X (0 = mean)
 X_std_imp <- X_std
 for (j in seq_len(ncol(X_std_imp))) {
   X_std_imp[is.na(X_std_imp[, j]), j] <- 0
 }
 
-# Numero di fattori: riusiamo r_fixed se esiste
+# Number of factors: reuse r_fixed if it exists
 if (exists("r_fixed")) {
   r_now_fvar <- r_fixed
 } else {
-  # fallback (non dovrebbe servire nel tuo setup)
+  # fallback (should not be needed in your setup)
   r_now_fvar <- min(5L, ncol(X_std_imp))
 }
 message("FVAR NOW: using r = ", r_now_fvar)
 
-# PCA per NOW su tutto il campione
+# PCA for NOW on the full sample
 pca_now_fvar <- prcomp(X_std_imp, center = FALSE, scale. = FALSE)
 r_use <- min(r_now_fvar, ncol(pca_now_fvar$x))
 F_all <- pca_now_fvar$x[, 1:r_use, drop = FALSE]
 colnames(F_all) <- paste0("F", 1:r_use)
 
-# Costruiamo Z_t = [Y_std, F_all]
+# Build Z_t = [Y_std, F_all]
 stopifnot(nrow(Y_std) == nrow(F_all))
 Z_all <- cbind(Y_std, F_all)
 Z_df  <- as.data.frame(Z_all)
 
-# VAR su [Y, F]
+# VAR on [Y, F]
 p_fix <- 2
 var_fvar_now <- VAR(Z_df, p = p_fix, type = "const")
 
-# Forecast a h = 1..4
+# Forecast for h = 1..4
 h_long <- 4
 fc_fvar_now <- predict(var_fvar_now, n.ahead = h_long)
 
-# Previsioni di Y (scala std)
+# Forecasts of Y (standardized scale)
 yh1_std_fvar <- sapply(vars_Y, function(nm) fc_fvar_now$fcst[[nm]][1, "fcst"])
 yh2_std_fvar <- sapply(vars_Y, function(nm) fc_fvar_now$fcst[[nm]][2, "fcst"])
 yh3_std_fvar <- sapply(vars_Y, function(nm) fc_fvar_now$fcst[[nm]][3, "fcst"])
 yh4_std_fvar <- sapply(vars_Y, function(nm) fc_fvar_now$fcst[[nm]][4, "fcst"])
 
-# De-standardizziamo alla scala trasformata
+# De-standardize to transformed scale
 yh1_fvar <- yh1_std_fvar * Y_sd + Y_mean
 yh2_fvar <- yh2_std_fvar * Y_sd + Y_mean
 yh3_fvar <- yh3_std_fvar * Y_sd + Y_mean
 yh4_fvar <- yh4_std_fvar * Y_sd + Y_mean
 names(yh1_fvar) <- names(yh2_fvar) <- names(yh3_fvar) <- names(yh4_fvar) <- vars_Y
 
-
 # =========================
-# 7.FVAR.1 – Back-transform a livelli (percorso ricorsivo h=1..4)
+# 10.FVAR.1 – Back-transform to levels (recursive path h=1..4)
 # =========================
 
-# Usa la stessa funzione get_transform già definita in precedenza
+# Use the same get_transform function already defined above
 get_transform <- function(var) {
   i <- match(var, metadata$ts_key)
   tr <- if (is.na(i)) NA_character_ else metadata$transform[i]
   ifelse(is.na(tr), "none", tolower(tr))
 }
 
-# Livelli originali delle Y (non trasformate) su tutto il campione
+# Original levels of Y (untransformed) over the full sample
 levels_df_fvar <- df %>%
   dplyr::mutate(date = as.Date(paste0(date, "-01"))) %>%
   dplyr::select(date, dplyr::all_of(vars_Y))
 
 last_date_fvar <- max(df_train_clean$date, na.rm = TRUE)
 
-# Ultimo livello osservato L_t per ogni variabile
+# Last observed level L_t for each variable
 L_t_vec_fvar <- setNames(numeric(length(vars_Y)), vars_Y)
 for (v in vars_Y) {
   L_t_val <- levels_df_fvar[[v]][levels_df_fvar$date == last_date_fvar]
   if (length(L_t_val) != 1 || !is.finite(L_t_val)) {
-    stop("FVAR NOW back-transform: non trovo L_t per variabile ", v)
+    stop("FVAR NOW back-transform: cannot find L_t for variable ", v)
   }
   L_t_vec_fvar[v] <- L_t_val
 }
 
-# Propagazione ricorsiva L_{t+h}
+# Recursive propagation L_{t+h}
 L_h1_fvar <- L_h2_fvar <- L_h3_fvar <- L_h4_fvar <- setNames(numeric(length(vars_Y)), vars_Y)
 
 for (v in vars_Y) {
@@ -1329,7 +1331,7 @@ for (v in vars_Y) {
   Lt   <- L_t_vec_fvar[v]
   
   if (v %in% growth_vars) {
-    # Per il PIL manteniamo la crescita in Δlog*100, non ricostruiamo il livello
+    # For GDP we keep growth in Δlog*100, we do not reconstruct the level
     L1 <- yh1_fvar[v]; L2 <- yh2_fvar[v]; L3 <- yh3_fvar[v]; L4 <- yh4_fvar[v]
   } else if (tr_v == "logdiff") {
     # y = 100 * Δlog(L) -> L_{t+1} = L_t * exp(y/100)
@@ -1344,7 +1346,7 @@ for (v in vars_Y) {
     L3 <- L2 + yh3_fvar[v]
     L4 <- L3 + yh4_fvar[v]
   } else {
-    # Nessuna trasformazione: già in livelli
+    # No transformation: already in levels
     L1 <- yh1_fvar[v]; L2 <- yh2_fvar[v]; L3 <- yh3_fvar[v]; L4 <- yh4_fvar[v]
   }
   
@@ -1354,11 +1356,11 @@ for (v in vars_Y) {
   L_h4_fvar[v] <- L4
 }
 
-# Date target (come nel NOW DFM)
+# Target dates (same as in NOW DFM)
 h1_date_fvar <- seq(last_date_fvar, by = "quarter", length.out = 2)[2]
 h4_date_fvar <- seq(last_date_fvar, by = "quarter", length.out = 5)[5]
 
-# Tabelle finali NOW FVAR
+# Final NOW FVAR tables
 
 now_fvar_transformed <- data.frame(
   variable       = vars_Y,
@@ -1386,20 +1388,20 @@ cat("\n=== FVAR – NOW forecasts (levels) ===\n")
 print(now_fvar_levels)
 
 # =========================
-#   8. NOW: PLOT VS KOF forecasts (DFM vs FVAR)
+#   11. NOW: PLOT VS KOF forecasts (DFM vs FVAR)
 # =========================
 
 last_date <- max(df_train_clean$date, na.rm = TRUE)
 h1_date   <- now_table_levels$target_h1_date[1]
 h4_date   <- now_table_levels$target_h4_date[1]
 
-# Serie storiche recenti (livelli)
+# Recent historical series (levels)
 levels_recent <- df_train %>%
   dplyr::select(date, all_of(vars_Y)) %>%
   dplyr::filter(date >= as.Date("2022-01-01")) %>%
   tidyr::pivot_longer(-date, names_to = "variable", values_to = "value")
 
-# --- PUNTI: nostro DFM (PCA+VAR) ---
+# --- POINTS: our DFM (PCA+VAR) ---
 our_pts <- bind_rows(
   now_table_levels %>%
     transmute(variable,
@@ -1415,7 +1417,7 @@ our_pts <- bind_rows(
               source  = "DFM")
 )
 
-# --- GDP in growth per confronto con KOF (come prima) ---
+# --- GDP in growth for comparison with KOF (as before) ---
 df_growth <- df %>%
   mutate(date = as.Date(paste0(date, "-01"))) %>%
   arrange(date) %>%
@@ -1435,7 +1437,7 @@ get_kof_value <- function(date_target, varname) {
   if (length(out) == 0) NA_real_ else out[1]
 }
 
-# --- PUNTI: KOF ---
+# --- POINTS: KOF ---
 kof_pts <- bind_rows(
   tibble(
     variable = vars_Y,
@@ -1453,7 +1455,7 @@ kof_pts <- bind_rows(
   )
 ) %>% dplyr::filter(is.finite(value))
 
-# --- PUNTI: FVAR (NOW) ---
+# --- POINTS: FVAR (NOW) ---
 fvar_pts <- bind_rows(
   now_fvar_levels %>%
     transmute(variable,
@@ -1469,25 +1471,25 @@ fvar_pts <- bind_rows(
               source  = "FVAR")
 )
 
-# ensure date are Date
+# ensure dates are Date
 levels_recent$date <- as.Date(levels_recent$date)
 our_pts$date       <- as.Date(our_pts$date)
 kof_pts$date       <- as.Date(kof_pts$date)
 fvar_pts$date      <- as.Date(fvar_pts$date)
 
-# Palette: DFM (blu), KOF (arancio), FVAR (verde)
+# Palette: DFM (blue), KOF (orange), FVAR (green)
 pal_colors <- c(
-  "DFM"  = "#1f77b4",  # blu
-  "KOF"  = "#ff7f0e",  # arancio
-  "FVAR" = "#2ca02c"   # verde
+  "DFM"  = "#1f77b4",  # blue
+  "KOF"  = "#ff7f0e",  # orange
+  "FVAR" = "#2ca02c"   # green
 )
 pal_shapes <- c(
-  "DFM"  = 16,  # cerchio pieno
-  "KOF"  = 17,  # triangolo
-  "FVAR" = 15   # quadrato
+  "DFM"  = 16,  # filled circle
+  "KOF"  = 17,  # triangle
+  "FVAR" = 15   # square
 )
 
-# Etichette pannelli
+# Panel labels
 facet_labels <- c(
   "rvgdp"    = "Real GDP Growth",
   "cpi"      = "Inflation (CPI)",
@@ -1538,85 +1540,86 @@ p <- ggplot() +
 
 print(p)
 
+
 # =============================
 # Economic Indicator – Step 1:
-# Estrazione del primo fattore F1 (NOW, su tutto il campione)
+# Extraction of the first factor F1 (NOW, over the full sample)
 # =============================
 
-# Safety: oggetti che devono esistere
+# Safety: objects that must exist
 req_ei_objs <- c("df_train_clean", "vars_X")
 miss_ei <- req_ei_objs[!vapply(req_ei_objs, exists, logical(1))]
 if (length(miss_ei)) {
-  stop("Mancano oggetti per costruire l'Economic Indicator: ",
+  stop("Missing objects to build the Economic Indicator: ",
        paste(miss_ei, collapse = ", "))
 }
 
-# Usiamo gli stessi regressori X usati per DFM/FVAR
+# Use the same regressors X used for DFM/FVAR
 X_now_names <- vars_X
 
-# Costruiamo un data frame "NOW" ordinato nel tempo
+# Build a “NOW” data frame ordered by time
 df_now_ei <- df_train_clean %>%
   dplyr::select(date, dplyr::all_of(X_now_names)) %>%
   dplyr::arrange(date)
 
-# Matrice X (tutto il campione disponibile, già trasformato)
+# Matrix X (entire available sample, already transformed)
 X_all_ei <- as.matrix(df_now_ei[, X_now_names, drop = FALSE])
 
-# Standardizzazione come nel NOW (full history)
+# Standardization as in NOW (full history)
 X_mean_ei <- apply(X_all_ei, 2, mean, na.rm = TRUE)
 X_sd_ei   <- apply(X_all_ei, 2, sd,   na.rm = TRUE)
 X_sd_ei[X_sd_ei == 0] <- 1
 
 X_std_ei <- scale(X_all_ei, center = X_mean_ei, scale = X_sd_ei)
 
-# Imputazione NA: 0 = media sulla scala standardizzata
+# Imputation of NA: 0 = mean on standardized scale
 X_std_imp_ei <- X_std_ei
 for (j in seq_len(ncol(X_std_imp_ei))) {
   X_std_imp_ei[is.na(X_std_imp_ei[, j]), j] <- 0
 }
 
-# PCA su X_std_imp_ei (tutto il campione, NOW)
+# PCA on X_std_imp_ei (entire sample, NOW)
 pca_ei <- prcomp(X_std_imp_ei, center = FALSE, scale. = FALSE)
 
-# Primo fattore F1 (Economic Indicator grezzo)
+# First factor F1 (raw Economic Indicator)
 F1 <- pca_ei$x[, 1]
 
-# Data frame base per l'indicatore
+# Base data frame for the indicator
 ei_raw <- data.frame(
   date = df_now_ei$date,
   F1   = as.numeric(F1)
 )
 
-# Controllo veloce
+# Quick check
 head(ei_raw)
 summary(ei_raw$F1)
 
 # =============================
 # Economic Indicator – Step 2:
-# Normalizzazione (SD=1 e SD=10 con media=100)
+# Normalization (SD=1 and SD=10 with mean=100)
 # =============================
 
 # Safety check
-if (!exists("ei_raw")) stop("Devi prima eseguire lo step 1 (ei_raw)")
+if (!exists("ei_raw")) stop("You must first run step 1 (ei_raw)")
 
-# Calcolo media e sd del fattore
+# Compute mean and sd of the factor
 F_mean <- mean(ei_raw$F1, na.rm = TRUE)
 F_sd   <- sd(ei_raw$F1, na.rm = TRUE)
 
-# Versione z-score (SD=1, mean=0)
+# z-score version (SD=1, mean=0)
 ei_raw$EI_z <- (ei_raw$F1 - F_mean) / F_sd
 
-# Versione tipo KOF (mean=100, SD=10)
+# KOF-style version (mean=100, SD=10)
 ei_raw$EI_kof <- 100 + 10 * (ei_raw$F1 - F_mean) / F_sd
 
-# Output finale: un solo oggetto pulito
+# Final output: a single clean object
 economic_indicator <- ei_raw %>%
   dplyr::select(date, EI_z, EI_kof)
 
-# Controllo
+# Check
 summary(economic_indicator)
 
-# Grafico base per verifica visiva
+# Plot for visual verificatio
 library(ggplot2)
 ggplot(economic_indicator, aes(x = date)) +
   geom_line(aes(y = EI_z), color = "#1f77b4", linewidth = 1) +
@@ -1629,25 +1632,21 @@ ggplot(economic_indicator, aes(x = date)) +
   theme_minimal(base_size = 13)
 
 # =============================
-# Economic Indicator vs Real GDP growth (QoQ, z-score)
+# 12. Economic Indicator vs Real GDP growth (QoQ, z-score)
 # =============================
 
-library(dplyr)
-library(tidyr)
-library(ggplot2)
-
-# 1) Crescita QoQ del PIL reale (rvgdp)
+# Real GDP QoQ growth (rvgdp)
 gdp_growth <- df %>%
   mutate(date = as.Date(paste0(date, "-01"))) %>%
   arrange(date) %>%
   mutate(rvgdp_growth = c(NA, diff(log(rvgdp)) * 100)) %>%
   dplyr::select(date, rvgdp_growth)
 
-# 2) Merge con EI_z
+# Merge with EI_z
 ei_gdp <- economic_indicator %>%
   left_join(gdp_growth, by = "date")
 
-# 3) Standardizziamo anche la crescita del PIL (per confronto visivo)
+# Standardize GDP growth as well (for visual comparison)
 mean_gdp <- mean(ei_gdp$rvgdp_growth, na.rm = TRUE)
 sd_gdp   <- sd(ei_gdp$rvgdp_growth,   na.rm = TRUE)
 
@@ -1656,19 +1655,19 @@ ei_gdp <- ei_gdp %>%
     rvgdp_z = (rvgdp_growth - mean_gdp) / sd_gdp
   )
 
-# 4) Mettiamo le due serie in formato long per ggplot
+# Put both series in long format for ggplot
 plot_data <- ei_gdp %>%
   dplyr::select(date, EI_z, rvgdp_z) %>%
   tidyr::pivot_longer(cols = c(EI_z, rvgdp_z),
-               names_to = "series",
-               values_to = "value")
+                      names_to = "series",
+                      values_to = "value")
 
 series_labels <- c(
-  "EI_z"    = "Economic Indicator (factor, z-score)",
-  "rvgdp_z" = "Real GDP growth (QoQ, z-score)"
+  "EI_z"    = "Economic Indicator",
+  "rvgdp_z" = "Real GDP growth"
 )
 
-# 5) Grafico
+# Plot
 p_ei_gdp <- ggplot(plot_data, aes(x = date, y = value, color = series)) +
   geom_line(linewidth = 0.9) +
   geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
@@ -1689,71 +1688,67 @@ p_ei_gdp <- ggplot(plot_data, aes(x = date, y = value, color = series)) +
   )
 
 print(p_ei_gdp)
- 
+
 
 # =============================
-# 1) Import KOF barometer (mensile) e passaggio a trimestrale
+# Import KOF barometer (monthly) and convert to quarterly
 # =============================
-library(dplyr)
-library(lubridate)
-install.packages("readxl")   # esegui solo una volta
-library(readxl)
 
 kof_path <- "C:/Users/kfree/OneDrive/Desktop/MASTER 3/MACRO FORECAST/DATASET/KOF_BAROMETER.xlsx"
 kof_raw <- read_excel(kof_path, sheet = 1)
 
 
-# Adatta questi nomi se nel file sono diversi
+# Adjust these names if they differ in the file
 names(kof_raw)[1:2] <- c("month_str", "kof_barometer")
 
 kof_q <- kof_raw %>%
   # "2009-09" -> "2009-09-01" -> Date
   mutate(date = as.Date(paste0(month_str, "-01"))) %>%
   arrange(date) %>%
-  # data del trimestre (inizio trimestre)
+  # quarter date (beginning of the quarter)
   mutate(q_date = floor_date(date, "quarter")) %>%
   group_by(q_date) %>%
-  # prendi SOLO l'ultimo mese disponibile del trimestre
+  # take ONLY the last month available in the quarter
   slice_max(order_by = date, n = 1, with_ties = FALSE) %>%
   ungroup() %>%
   transmute(
-    date = q_date,                # data trimestrale (es. 2009-10-01 per Q4)
-    kof_barometer = kof_barometer # valore del barometro a fine trimestre
+    date = q_date,                
+    kof_barometer = kof_barometer # barometer value at end of quarter
   ) %>%
   arrange(date)
 
 # =============================
-# 2) GDP growth QoQ (%) – trimestrale
+# GDP growth QoQ (%) – quarterly
 # =============================
 
 gdp_q <- df %>%
   mutate(date = as.Date(paste0(date, "-01"))) %>%
   arrange(date) %>%
   mutate(
-    gdp_growth = c(NA, diff(log(rvgdp)) * 100)   # crescita QoQ in %
+    gdp_growth = c(NA, diff(log(rvgdp)) * 100)   # QoQ growth in %
   ) %>%
   dplyr::select(date, gdp_growth)
 
 # =============================
-# 3) Merge: EI (trimestrale), GDP growth e KOF (trimestrale)
+# Merge: EI (quarterly), GDP growth and KOF (quarterly)
 # =============================
 
 merged <- economic_indicator %>%
-  # abbiamo EI_z (z-score del fattore)
+  # we have EI_z (factor z-score)
   left_join(gdp_q,   by = "date") %>%
   left_join(kof_q,   by = "date")
 
 # =============================
-# 4) Mettiamo tutto sulla stessa scala: mean=100, sd=100
+# Put everything on the same scale: mean=100, sd=100
 # =============================
 
-# EI_z è già z-score: basta riscalararlo
+# EI_z is already a z-score: just rescale it
 merged <- merged %>%
   mutate(
     EI_100_raw = 100 + 100 * EI_z
   )
 
-# Standardizziamo GDP growth e KOF in z-score, poi li portiamo a mean=100, sd=100
+# Standardize GDP growth and KOF to z-score, then rescale to mean=100, sd=100
 gdp_mean <- mean(merged$gdp_growth, na.rm = TRUE)
 gdp_sd   <- sd(merged$gdp_growth,   na.rm = TRUE)
 
@@ -1768,7 +1763,7 @@ merged <- merged %>%
   )
 
 # =============================
-# 5) Long format per il grafico
+# Long format for the plot
 # =============================
 
 plot_data <- merged %>%
@@ -1780,13 +1775,13 @@ plot_data <- merged %>%
   )
 
 series_labels <- c(
-  "EI_100"  = "Economic Indicator (factor, SD=100)",
-  "GDP_100" = "Real GDP growth QoQ (SD=100)",
-  "KOF_100" = "KOF Barometer (SD=100)"
+  "EI_100"  = "Economic Indicator",
+  "GDP_100" = "Real GDP growth",
+  "KOF_100" = "KOF Barometer"
 )
 
 # =============================
-# 6) Grafico
+# Plot
 # =============================
 
 ggplot(plot_data, aes(x = date, y = value, color = series)) +
@@ -1794,9 +1789,9 @@ ggplot(plot_data, aes(x = date, y = value, color = series)) +
   geom_hline(yintercept = 100, linetype = "dashed", color = "grey40") +
   scale_color_manual(
     values = c(
-      "EI_100"  = "#1f77b4",  # blu
-      "GDP_100" = "#ff7f0e",  # arancio
-      "KOF_100" = "#2ca02c"   # verde
+      "EI_100"  = "#1f77b4",  # blue
+      "GDP_100" = "#ff7f0e",  # orange
+      "KOF_100" = "#2ca02c"   # green
     ),
     labels = series_labels,
     name   = ""
@@ -1811,3 +1806,8 @@ ggplot(plot_data, aes(x = date, y = value, color = series)) +
   theme(
     legend.position = "top"
   )
+
+
+
+
+
