@@ -64,11 +64,6 @@ library(readxl)
 
 3. **Define local file paths** for the quarterly data, metadata, and KOF barometer.
 
-There are two sets of paths:
-
-* One for **Noah’s machine** (e.g. `~/Documents/school/...`),
-* One for a **collaborator’s machine** (e.g. `C:/Users/kfree/...`).
-
 Example:
 
 ```r
