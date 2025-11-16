@@ -26,7 +26,7 @@ nkof_path <- "~/Documents/school/methods-for-macro-forecasting-2025/submission/d
 # Adjust depending on environment
 df <- utils::read.csv(nfilepath_data)
 metadata <- utils::read.csv(nfilepath_metadata)
-kof_raw <- read_excel(kkof_path, sheet = 1)
+kof_raw <- read_excel(nkof_path, sheet = 1)
 cutoff_pre_covid <- as.Date("2019-12-31")
 # ================================
 # 2. Data Preparation
@@ -35,7 +35,7 @@ names(metadata) <- tolower(names(metadata))
 if (!"ts_key" %in% names(metadata)) stop("Missing ts_key in metadata")
 
 # Filter to data we know (not projections)
-df_train <- df %>%
+df_train_pre_covid <- df %>%
   mutate(date = as.Date(paste0(date, "-01"))) %>%        
   filter(date <= cutoff_pre_covid) %>%
   mutate(across(-date, as.numeric))
@@ -46,7 +46,7 @@ df_post <- df %>%
   mutate(across(-date, as.numeric))
 
 # Check to confirm no missing values
-sapply(df_train, function(x) sum(is.na(x))) %>% sort(decreasing = TRUE)
+sapply(df_train_pre_covid, function(x) sum(is.na(x))) %>% sort(decreasing = TRUE)
 
 # normalize caps
 metadata$unit_low <- tolower(metadata$unit)
@@ -79,7 +79,7 @@ unit_to_transform <- c(
 )
 metadata$transform <- unit_to_transform[metadata$unit_low]
 
-df_train_clean <- df_train
+df_train_clean <- df_train_pre_covid
 
 transform_variable <- function(x, transform_type) {
   if (transform_type == "logdiff") {
@@ -116,7 +116,7 @@ df_train_std[-1] <- scale(df_train_clean[-1])
 
 # Define targets (ts_key) than X
 vars_Y <- c("rvgdp", "cpi", "wkfreuro")
-growth_vars <- c("rvgdp")  # stay as Δlog×100 (growth)
+growth_vars <- c("rvgdp")  # growth_vars are reported in percent growth (Δlog * 100), even though the underlying transform is logdiff. That’s why we skip back-transformation to levels for these.
 level_vars  <- setdiff(vars_Y, growth_vars)
 missing_y <- setdiff(vars_Y, names(df_train_std))
 if (length(missing_y)) stop(paste("Missing targets:", paste(missing_y, collapse=", ")))
@@ -199,7 +199,7 @@ hc <- hclust(d, method = "average")
 # Cut height: 0.1 ≈ keep 1 from any group with |ρ| > 0.9
 groups <- cutree(hc, h = 0.1)
 
-# Keep the column in each cluster with the fewest NAs (or highest variance—your choice)
+# Keep the column in each cluster with the fewest NAs 
 keepers <- tapply(colnames(X_train_for_sel), groups, function(cols) {
   nafrac <- colMeans(is.na(X_train_for_sel[, cols, drop = FALSE]))
   cols[which.min(nafrac)]
@@ -210,25 +210,18 @@ vars_X <- unname(unlist(keepers))
 X0 <- as.matrix(df_train_std[1:t0_idx, vars_X, drop = FALSE])
 Y0 <- as.matrix(df_train_std[1:t0_idx, vars_Y,     drop = FALSE])
 
-# TESTS
-sum(names(df_train_clean)[-1] != names(df_train)[-1])
-
 # How many columns are transformed withing the remaining ones?
 common <- intersect(names(df_train_clean)[-1], names(df_train)[-1])
 changed <- sum(sapply(common, function(nm) !identical(df_train_clean[[nm]], df_train[[nm]][-1])))
-cat("Transformed Series: ", changed, "\n")
 
 # Which columns are deleted (es. all NA after logdiff or sd≈0)?
 dropped <- setdiff(names(df_train)[-1], names(df_train_clean)[-1])
-cat("Colonne rimosse: ", paste(dropped, collapse = ", "), "\n")
 
 # Dimension X/Y for safety
 cat("Dim X0: ", paste(dim(X0), collapse=" x "), " | Dim Y0: ", paste(dim(Y0), collapse=" x "), "\n")
 
 # Are there NA in X0?
 X0 <- as.matrix(df_train_std[1:t0_idx, vars_X, drop = FALSE])
-sort(colSums(is.na(X0)), decreasing = TRUE)[1:10]
-anyNA(X0)
 
 # ================================
 # 3. Bai-Ng factors selection
@@ -276,13 +269,12 @@ df_pca <- data.frame(
   Variance = var_explained,
   Cumulative = cumvar_explained
 )
-
-# Bai–Ng selection (if not yet run) 
-bn <- bn_select_r_icp2(X0_imp, rmax = 50)
-r_selected <- bn$r
+# 
+# # Bai–Ng selection (if not yet run) 
+# bn <- bn_select_r_icp2(X0_imp, rmax = 50)
+# r_selected <- bn$r
 
 # Plot cumulative variance explained 
-library(ggplot2)
 
 ggplot(df_pca, aes(x = Component, y = Cumulative)) +
   geom_line(color = "steelblue", linewidth = 1) +
@@ -675,9 +667,6 @@ p_lvl <- ggplot(long_all_lvl, aes(x = date, y = value, color = type, linetype = 
   theme(legend.position = "top", strip.text = element_text(face="bold"))
 print(p_lvl)
 
-summary(long_all_lvl$date)
-unique(diff(sort(unique(long_all_lvl$date))))
-
 
 # =========================
 #   7. "NOW" FORECASTS from latest data (h=1 and h=4)
@@ -685,7 +674,7 @@ unique(diff(sort(unique(long_all_lvl$date))))
 
 # Keep only observed data up to today 
 # Use full dataset up to today for the NOW forecast (post-training)
-df_train_clean <- df %>%
+df_now_all <- df %>%
   mutate(date = as.Date(paste0(date, "-01"))) %>%
   mutate(across(-date, as.numeric)) %>%
   filter(date <= as.Date("2025-07-01"))
@@ -693,24 +682,24 @@ df_train_clean <- df %>%
 for (i in seq_len(nrow(metadata))) {
   key <- metadata$ts_key[i]
   t_type <- metadata$transform[i]
-  if (!is.na(t_type) && key %in% names(df_train_clean)) {
-    df_train_clean[[key]] <- transform_variable(df_train_clean[[key]], t_type)
+  if (!is.na(t_type) && key %in% names(df_now_all)) {
+    df_now_all[[key]] <- transform_variable(df_now_all[[key]], t_type)
   }
 }
 
 # Remove first row after differencing
-df_train_clean <- df_train_clean[-1, ]
+df_now_all <- df_now_all[-1, ]
 
 # Standardize using the same approach as before
-df_train_std <- df_train_clean
-df_train_std[-1] <- scale(df_train_clean[-1])
+df_now_std <- df_now_all
+df_now_std[-1] <- scale(df_now_all[-1])
 # Decide predictor set for NOW (frozen on initial 80%)
 X_now_names <- vars_X
 
 # Build working frame
 needed_cols <- c("date", vars_Y, X_now_names)
-needed_cols <- intersect(needed_cols, names(df_train_clean))
-df_now <- df_train_clean[, needed_cols, drop = FALSE]
+needed_cols <- intersect(needed_cols, names(df_now_all))
+df_now <- df_now_all[, needed_cols, drop = FALSE]
 df_now <- df_now[order(df_now$date), , drop = FALSE]
 row.names(df_now) <- NULL
 
@@ -740,7 +729,8 @@ if (exists("r_fixed")) {
 } else {
   t0_now <- max(1L, floor(0.8 * nrow(X_std)))
   X0_now <- X_std_imp[1:t0_now, , drop = FALSE]
-  bn_now <- bn_select_r(X0_now, crit = "ICp3")
+  bn_now <- bn_select_r_icp2(X0_now, rmax = 10)
+  # bn_now <- bn_select_r(X0_now, crit = "ICp3")
   r_now  <- max(1, bn_now$r)
   message("NOW: r selected by ICp3 on initial 80% = ", r_now)
 }
@@ -817,7 +807,7 @@ names(Y_h1_real) <- vars_Y
 names(Y_h4_real) <- vars_Y
 
 # Target dates (next quarter and +4 quarters)
-last_date <- max(df_train_clean$date, na.rm = TRUE)
+last_date <- max(df_now_all$date, na.rm = TRUE)
 h1_date   <- seq(last_date, by = "quarter", length.out = 2)[2]
 h4_date   <- seq(last_date, by = "quarter", length.out = 5)[5]
 
@@ -866,17 +856,17 @@ yh3 <- yh3_std * Y_sd + Y_mean
 yh4 <- yh4_std * Y_sd + Y_mean
 names(yh1) <- names(yh2) <- names(yh3) <- names(yh4) <- vars_Y
 
-# Recursive back-transform at LEVELS
-get_transform <- function(var) {
-  i <- match(var, metadata$ts_key)
-  tr <- if (is.na(i)) NA_character_ else metadata$transform[i]
-  ifelse(is.na(tr), "none", tolower(tr))
-}
+# # Recursive back-transform at LEVELS
+# get_transform <- function(var) {
+#   i <- match(var, metadata$ts_key)
+#   tr <- if (is.na(i)) NA_character_ else metadata$transform[i]
+#   ifelse(is.na(tr), "none", tolower(tr))
+# }
 
 levels_df <- df %>%
   mutate(date = as.Date(paste0(date, "-01"))) %>%
   dplyr::select(date, all_of(vars_Y))
-last_date <- max(df_train_clean$date, na.rm = TRUE)
+last_date <- max(df_now_all$date, na.rm = TRUE)
 
 # last observed level L_t for each Y
 L_t_vec <- setNames(numeric(length(vars_Y)), vars_Y)
@@ -960,7 +950,7 @@ print(now_table_levels) # Levels
 #   8. NOW: PLOT VS KOF forecasts
 # =========================
 
-last_date <- max(df_train_clean$date, na.rm = TRUE)
+last_date <- max(df_now_all$date, na.rm = TRUE)
 h1_date   <- now_table_levels$target_h1_date[1]
 h4_date   <- now_table_levels$target_h4_date[1]
 
@@ -1078,11 +1068,11 @@ cat("\n=== Expanding-window forecasting: FVAR ===\n")
 k <- 0
 for (tcut in oos_origin_idx) {
   k <- k + 1
-  cat("FVAR Origin", k, "/", nOrg, "— up to", as.character(df_train_std$date[tcut]), "\n")
+  cat("FVAR Origin", k, "/", nOrg, "— up to", as.character(df_now_std$date[tcut]), "\n")
   
   # Data up to origin tcut
-  X_train <- as.matrix(df_train_std[1:tcut, vars_X, drop = FALSE])
-  Y_train <- as.matrix(df_train_std[1:tcut, vars_Y, drop = FALSE])
+  X_train <- as.matrix(df_now_std[1:tcut, vars_X, drop = FALSE])
+  Y_train <- as.matrix(df_now_std[1:tcut, vars_Y, drop = FALSE])
   
   # Standardization of X
   X_mean <- colMeans(X_train, na.rm = TRUE)
@@ -1120,7 +1110,7 @@ for (tcut in oos_origin_idx) {
   pred_h1_std_fvar_mat[k, ] <- pred_h1_std
   pred_h4_std_fvar_mat[k, ] <- pred_h4_std
   
-  # De-standardization (return to the "transformed" scale as in df_train_clean)
+  # De-standardization (return to the "transformed" scale as in df_now_all)
   pred_h1_real_fvar[k, ] <- pred_h1_std * Y_sd + Y_mean
   pred_h4_real_fvar[k, ] <- pred_h4_std * Y_sd + Y_mean
 }
@@ -1222,7 +1212,7 @@ print(metrics_levels_fvar)
 # =========================
 
 # Safety: objects that must exist from the NOW DFM section
-req_now_objs <- c("df_train_clean","vars_Y","vars_X","growth_vars","metadata","df")
+req_now_objs <- c("df_now_all","vars_Y","vars_X","growth_vars","metadata","df")
 miss_now <- req_now_objs[!vapply(req_now_objs, exists, logical(1))]
 if (length(miss_now)) {
   stop("Missing objects for FVAR NOW: ", paste(miss_now, collapse = ", "))
@@ -1232,8 +1222,8 @@ if (length(miss_now)) {
 X_now_names <- vars_X
 
 needed_cols <- c("date", vars_Y, X_now_names)
-needed_cols <- intersect(needed_cols, names(df_train_clean))
-df_now <- df_train_clean[, needed_cols, drop = FALSE]
+needed_cols <- intersect(needed_cols, names(df_now_all))
+df_now <- df_now_all[, needed_cols, drop = FALSE]
 df_now <- df_now[order(df_now$date), , drop = FALSE]
 row.names(df_now) <- NULL
 
@@ -1300,19 +1290,19 @@ names(yh1_fvar) <- names(yh2_fvar) <- names(yh3_fvar) <- names(yh4_fvar) <- vars
 # 10.FVAR.1 – Back-transform to levels (recursive path h=1..4)
 # =========================
 
-# Use the same get_transform function already defined above
-get_transform <- function(var) {
-  i <- match(var, metadata$ts_key)
-  tr <- if (is.na(i)) NA_character_ else metadata$transform[i]
-  ifelse(is.na(tr), "none", tolower(tr))
-}
+# # Use the same get_transform function already defined above
+# get_transform <- function(var) {
+#   i <- match(var, metadata$ts_key)
+#   tr <- if (is.na(i)) NA_character_ else metadata$transform[i]
+#   ifelse(is.na(tr), "none", tolower(tr))
+# }
 
 # Original levels of Y (untransformed) over the full sample
 levels_df_fvar <- df %>%
   dplyr::mutate(date = as.Date(paste0(date, "-01"))) %>%
   dplyr::select(date, dplyr::all_of(vars_Y))
 
-last_date_fvar <- max(df_train_clean$date, na.rm = TRUE)
+last_date_fvar <- max(df_now_all$date, na.rm = TRUE)
 
 # Last observed level L_t for each variable
 L_t_vec_fvar <- setNames(numeric(length(vars_Y)), vars_Y)
@@ -1392,7 +1382,7 @@ print(now_fvar_levels)
 #   11. NOW: PLOT VS KOF forecasts (DFM vs FVAR)
 # =========================
 
-last_date <- max(df_train_clean$date, na.rm = TRUE)
+last_date <- max(df_now_all$date, na.rm = TRUE)
 h1_date   <- now_table_levels$target_h1_date[1]
 h4_date   <- now_table_levels$target_h4_date[1]
 
@@ -1548,7 +1538,7 @@ print(p)
 # =============================
 
 # Safety: objects that must exist
-req_ei_objs <- c("df_train_clean", "vars_X")
+req_ei_objs <- c("df_now_all", "vars_X")
 miss_ei <- req_ei_objs[!vapply(req_ei_objs, exists, logical(1))]
 if (length(miss_ei)) {
   stop("Missing objects to build the Economic Indicator: ",
@@ -1559,7 +1549,7 @@ if (length(miss_ei)) {
 X_now_names <- vars_X
 
 # Build a “NOW” data frame ordered by time
-df_now_ei <- df_train_clean %>%
+df_now_ei <- df_now_all %>%
   dplyr::select(date, dplyr::all_of(X_now_names)) %>%
   dplyr::arrange(date)
 
@@ -1590,11 +1580,6 @@ ei_raw <- data.frame(
   date = df_now_ei$date,
   F1   = as.numeric(F1)
 )
-
-# Quick check
-head(ei_raw)
-summary(ei_raw$F1)
-
 # =============================
 # Economic Indicator – Step 2:
 # Normalization (SD=1 and SD=10 with mean=100)
@@ -1617,11 +1602,6 @@ ei_raw$EI_kof <- 100 + 10 * (ei_raw$F1 - F_mean) / F_sd
 economic_indicator <- ei_raw %>%
   dplyr::select(date, EI_z, EI_kof)
 
-# Check
-summary(economic_indicator)
-
-# Plot for visual verificatio
-library(ggplot2)
 ggplot(economic_indicator, aes(x = date)) +
   geom_line(aes(y = EI_z), color = "#1f77b4", linewidth = 1) +
   geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
