@@ -8,19 +8,6 @@ Course repository for the ETH autumn 2025 course on "Methods of Macroeconomic Fo
 - [Tech Setup Checklist](/resources/tech_setup_checklist.pdf)
 - [Project Description](/resources/project_description.pdf)
 
-## Time Schedule
-
-| Date | Time | Schedule |
-|------|------| ---|
-|02 Oct 2025 |10am - 3pm |Methods Boot Camp|
-|02 Oct 2025 |3pm - 4pm |Lab|
-|03 Oct 2025 |10am - 4pm |Methods Boot Camp with integrated Lab|
-|10 Oct 2025 | EOB | Hand in your project preferences |
-|14 Oct 2025 | EOB | Topic allocation |
-|19 Nov 2025 | 11pm | Hand in your presentation slides |
-|20 Nov 2025 |10am - 2pm |Presentations|
-|21 Nov 2025 |10am - 2pm |Presentations|
-|12 Dec 2025 |10am - 12pm |Exam|
 
 # Documentation
 
